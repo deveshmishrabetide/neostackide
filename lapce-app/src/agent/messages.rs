@@ -18,6 +18,7 @@ fn message_view(
     message: AgentMessage,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
+    tracing::debug!("message_view called for role: {:?}", message.role);
     let role = message.role;
     let content = message.content;
 
@@ -59,6 +60,7 @@ fn message_content_view(
     content: MessageContent,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
+    tracing::debug!("message_content_view called for content type: {:?}", std::mem::discriminant(&content));
     match content {
         MessageContent::Text(text_content) => {
             container(
