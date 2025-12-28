@@ -73,14 +73,17 @@ impl AgentRuntime {
         for msg in self.rpc.rx().iter() {
             match msg {
                 AgentRpc::Connect { config, workspace_path } => {
+                    tracing::info!("AgentRuntime: Received Connect request for {}", config.command);
                     let connection = self.connection.clone();
                     let notification_tx = self.notification_tx.clone();
                     let client = self.client.clone();
 
                     // Run with LocalSet for spawn_local support
                     local.block_on(&rt, async {
+                        tracing::info!("AgentRuntime: Starting do_connect...");
                         match Self::do_connect(config, workspace_path, client).await {
                             Ok((conn, session_id, child)) => {
+                                tracing::info!("AgentRuntime: Connection successful, session_id: {}", session_id);
                                 *connection.write() = Some(ActiveConnection {
                                     conn,
                                     session_id: session_id.clone(),
@@ -91,6 +94,7 @@ impl AgentRuntime {
                                 });
                             }
                             Err(e) => {
+                                tracing::error!("AgentRuntime: Connection failed: {}", e);
                                 let _ = notification_tx.send(AgentNotification::Error {
                                     message: e.to_string(),
                                 });

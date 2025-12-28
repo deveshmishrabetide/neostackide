@@ -115,10 +115,14 @@ impl AgentRpcHandler {
 
     /// Connect to an agent with the given configuration
     pub fn connect(&self, config: AgentConfig, workspace_path: PathBuf) {
-        let _ = self.tx.send(AgentRpc::Connect {
+        tracing::info!("AgentRpcHandler: Sending Connect message for {}", config.command);
+        match self.tx.send(AgentRpc::Connect {
             config,
             workspace_path,
-        });
+        }) {
+            Ok(_) => tracing::info!("AgentRpcHandler: Connect message sent successfully"),
+            Err(e) => tracing::error!("AgentRpcHandler: Failed to send Connect message: {}", e),
+        }
     }
 
     /// Send a prompt to the agent (async with callback)
