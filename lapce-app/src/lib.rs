@@ -1,4 +1,6 @@
 pub mod about;
+pub mod acp;
+pub mod agent;
 pub mod alert;
 pub mod app;
 pub mod code_action;

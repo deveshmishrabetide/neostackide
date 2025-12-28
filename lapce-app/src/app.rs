@@ -103,7 +103,7 @@ use crate::{
     settings::{settings_view, theme_color_settings_view},
     status::status,
     text_input::TextInputBuilder,
-    title::{title, window_controls_view},
+    title::{ViewMode, title, window_controls_view},
     tracing::*,
     update::ReleaseInfo,
     window::{TabsInfo, WindowData, WindowInfo},
@@ -2176,6 +2176,74 @@ fn tooltip_tip<V: View + 'static>(
     })
 }
 
+/// Placeholder view for Agent mode
+fn agent_view(window_tab_data: Rc<WindowTabData>) -> impl View {
+    crate::agent::view::agent_view(window_tab_data)
+}
+
+/// Placeholder view for DevOps mode
+fn devops_view(window_tab_data: Rc<WindowTabData>) -> impl View {
+    let config = window_tab_data.common.config;
+    container(
+        label(|| "DevOps Mode".to_string())
+            .style(move |s| {
+                let config = config.get();
+                s.font_size(24.0)
+                    .color(config.color(LapceColor::EDITOR_FOREGROUND))
+            })
+    )
+    .style(move |s| {
+        let config = config.get();
+        s.size_full()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .background(config.color(LapceColor::EDITOR_BACKGROUND))
+    })
+    .debug_name("DevOps View")
+}
+
+/// Main content area that switches based on view mode
+/// All views are kept alive, only visibility is toggled
+fn main_content(window_tab_data: Rc<WindowTabData>) -> impl View {
+    let view_mode = window_tab_data.view_mode;
+
+    stack((
+        // Agent view - hidden unless in Agent mode
+        agent_view(window_tab_data.clone())
+            .style(move |s| {
+                let is_visible = view_mode.get() == ViewMode::Agent;
+                s.size_full()
+                    .absolute()
+                    .inset_top(0.0)
+                    .inset_left(0.0)
+                    .apply_if(!is_visible, |s| s.hide())
+            }),
+        // IDE/Workbench view - hidden unless in IDE mode
+        workbench(window_tab_data.clone())
+            .style(move |s| {
+                let is_visible = view_mode.get() == ViewMode::Ide;
+                s.size_full()
+                    .absolute()
+                    .inset_top(0.0)
+                    .inset_left(0.0)
+                    .apply_if(!is_visible, |s| s.hide())
+            }),
+        // DevOps view - hidden unless in DevOps mode
+        devops_view(window_tab_data.clone())
+            .style(move |s| {
+                let is_visible = view_mode.get() == ViewMode::DevOps;
+                s.size_full()
+                    .absolute()
+                    .inset_top(0.0)
+                    .inset_left(0.0)
+                    .apply_if(!is_visible, |s| s.hide())
+            }),
+    ))
+    .style(|s| s.size_full())
+    .debug_name("Main Content")
+}
+
 fn workbench(window_tab_data: Rc<WindowTabData>) -> impl View {
     let workbench_size = window_tab_data.common.workbench_size;
     let main_split_width = window_tab_data.main_split.width;
@@ -3303,7 +3371,7 @@ fn window_tab(window_tab_data: Rc<WindowTabData>) -> impl View {
     let view = stack((
         stack((
             title(window_tab_data.clone()),
-            workbench(window_tab_data.clone()),
+            main_content(window_tab_data.clone()),
             status(
                 window_tab_data.clone(),
                 source_control,

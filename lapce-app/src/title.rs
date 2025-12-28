@@ -5,14 +5,40 @@ use floem::{
     event::EventListener,
     menu::{Menu, MenuItem},
     peniko::Color,
-    reactive::{
-        Memo, ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo,
-    },
+    reactive::{Memo, ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo},
     style::{AlignItems, CursorStyle, JustifyContent},
     views::{Decorators, container, drag_window_area, empty, label, stack, svg},
 };
 use lapce_core::meta;
 use lapce_rpc::proxy::ProxyStatus;
+
+/// View modes for the IDE
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ViewMode {
+    Agent,
+    Ide,
+    DevOps,
+}
+
+/// Build configuration options
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildConfig {
+    Development,
+    DebugGame,
+    Test,
+    Shipping,
+}
+
+impl BuildConfig {
+    fn as_str(&self) -> &'static str {
+        match self {
+            BuildConfig::Development => "Development",
+            BuildConfig::DebugGame => "DebugGame",
+            BuildConfig::Test => "Test",
+            BuildConfig::Shipping => "Shipping",
+        }
+    }
+}
 
 use crate::{
     app::{clickable_icon, not_clickable_icon, tooltip_label, window_menu},
@@ -24,6 +50,221 @@ use crate::{
     window_tab::WindowTabData,
     workspace::LapceWorkspace,
 };
+
+/// View mode selector button (Agent | IDE | DevOps)
+fn view_mode_button(
+    mode: ViewMode,
+    label_text: &'static str,
+    icon_name: &'static str,
+    view_mode: RwSignal<ViewMode>,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    stack((
+        svg(move || config.get().ui_svg(icon_name)).style(move |s| {
+            let config = config.get();
+            let icon_size = config.ui.icon_size() as f32;
+            s.size(icon_size, icon_size)
+                .color(config.color(LapceColor::LAPCE_ICON_ACTIVE))
+        }),
+        label(move || label_text.to_string())
+            .style(|s| s.margin_left(4.0).selectable(false).font_size(12.0)),
+    ))
+    .on_click_stop(move |_| {
+        view_mode.set(mode);
+    })
+    .style(move |s| {
+        let config = config.get();
+        let is_active = view_mode.get() == mode;
+        s.padding_horiz(10.0)
+            .padding_vert(4.0)
+            .align_items(Some(AlignItems::Center))
+            .border_radius(4.0)
+            .cursor(CursorStyle::Pointer)
+            .apply_if(is_active, |s| {
+                s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
+            })
+            .hover(|s| {
+                s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+            })
+    })
+}
+
+/// View mode selector (Agent | IDE | DevOps)
+fn view_mode_selector(
+    view_mode: RwSignal<ViewMode>,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    stack((
+        view_mode_button(ViewMode::Agent, "Agent", LapceIcons::DEBUG_ALT, view_mode, config),
+        view_mode_button(ViewMode::Ide, "IDE", LapceIcons::FILE, view_mode, config),
+        view_mode_button(ViewMode::DevOps, "DevOps", LapceIcons::SCM, view_mode, config),
+    ))
+    .style(move |s| {
+        let config = config.get();
+        s.align_items(Some(AlignItems::Center))
+            .padding_horiz(4.0)
+            .padding_vert(2.0)
+            .border(1.0)
+            .border_color(config.color(LapceColor::LAPCE_BORDER))
+            .border_radius(6.0)
+            .background(config.color(LapceColor::EDITOR_BACKGROUND))
+    })
+}
+
+/// Dropdown selector button for target/config
+fn dropdown_button(
+    label_text: impl Fn() -> String + 'static,
+    width: f64,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    stack((
+        label(label_text)
+            .style(|s| s.selectable(false).font_size(12.0).flex_grow(1.0)),
+        svg(move || config.get().ui_svg(LapceIcons::ITEM_OPENED)).style(move |s| {
+            let config = config.get();
+            s.size(10.0, 10.0)
+                .margin_left(4.0)
+                .color(config.color(LapceColor::LAPCE_ICON_ACTIVE))
+        }),
+    ))
+    .style(move |s| {
+        let config = config.get();
+        s.width(width)
+            .padding_horiz(8.0)
+            .padding_vert(4.0)
+            .align_items(Some(AlignItems::Center))
+            .border(1.0)
+            .border_color(config.color(LapceColor::LAPCE_BORDER))
+            .border_radius(4.0)
+            .background(config.color(LapceColor::EDITOR_BACKGROUND))
+            .cursor(CursorStyle::Pointer)
+            .hover(|s| {
+                s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+            })
+    })
+}
+
+/// Toolbar button (build/run/debug)
+fn toolbar_button(
+    icon: fn() -> &'static str,
+    tooltip: &'static str,
+    color: Option<fn(&LapceConfig) -> Color>,
+    disabled: bool,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    tooltip_label(
+        config,
+        container(svg(move || config.get().ui_svg(icon())).style(move |s| {
+            let config = config.get();
+            let icon_size = config.ui.icon_size() as f32;
+            let icon_color = if disabled {
+                config.color(LapceColor::LAPCE_ICON_ACTIVE).with_alpha(0.5)
+            } else if let Some(color_fn) = color {
+                color_fn(&config)
+            } else {
+                config.color(LapceColor::LAPCE_ICON_ACTIVE)
+            };
+            s.size(icon_size, icon_size).color(icon_color)
+        })),
+        move || tooltip,
+    )
+    .style(move |s| {
+        let config = config.get();
+        s.padding(6.0)
+            .border_radius(4.0)
+            .cursor(if disabled { CursorStyle::Default } else { CursorStyle::Pointer })
+            .apply_if(!disabled, |s| {
+                s.hover(|s| {
+                    s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+                })
+                .active(|s| {
+                    s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
+                })
+            })
+    })
+}
+
+/// Unreal Engine toolbar (target, config, build/run/debug)
+fn unreal_toolbar(
+    build_target: RwSignal<String>,
+    build_config: RwSignal<BuildConfig>,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    stack((
+        // Target selector
+        dropdown_button(
+            move || build_target.get(),
+            120.0,
+            config,
+        )
+        .popout_menu(move || {
+            Menu::new("")
+                .entry(MenuItem::new("MyGameEditor").action(move || {
+                    build_target.set("MyGameEditor".to_string());
+                }))
+                .entry(MenuItem::new("MyGame").action(move || {
+                    build_target.set("MyGame".to_string());
+                }))
+        }),
+        // Config selector
+        dropdown_button(
+            move || build_config.get().as_str().to_string(),
+            100.0,
+            config,
+        )
+        .popout_menu(move || {
+            Menu::new("")
+                .entry(MenuItem::new("Development").action(move || {
+                    build_config.set(BuildConfig::Development);
+                }))
+                .entry(MenuItem::new("DebugGame").action(move || {
+                    build_config.set(BuildConfig::DebugGame);
+                }))
+                .entry(MenuItem::new("Test").action(move || {
+                    build_config.set(BuildConfig::Test);
+                }))
+                .entry(MenuItem::new("Shipping").action(move || {
+                    build_config.set(BuildConfig::Shipping);
+                }))
+        })
+        .style(|s| s.margin_left(6.0)),
+        // Separator
+        container(empty()).style(move |s| {
+            let config = config.get();
+            s.width(1.0)
+                .height(20.0)
+                .margin_horiz(8.0)
+                .background(config.color(LapceColor::LAPCE_BORDER))
+        }),
+        // Build button
+        toolbar_button(
+            || LapceIcons::DEBUG_RESTART,
+            "Build (Ctrl+B)",
+            Some(|c: &LapceConfig| c.color(LapceColor::LAPCE_ICON_ACTIVE)),
+            false,
+            config,
+        ),
+        // Run button
+        toolbar_button(
+            || LapceIcons::START,
+            "Run",
+            Some(|_c: &LapceConfig| Color::from_rgb8(34, 197, 94)), // green
+            false,
+            config,
+        )
+        .style(|s| s.margin_left(2.0)),
+        // Debug button
+        toolbar_button(
+            || LapceIcons::DEBUG,
+            "Debug (F5)",
+            None,
+            true, // disabled for now
+            config,
+        )
+        .style(|s| s.margin_left(2.0)),
+    ))
+    .style(|s| s.align_items(Some(AlignItems::Center)))
+}
 
 fn left(
     workspace: Arc<LapceWorkspace>,
@@ -429,6 +670,11 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
     let title_height = window_tab_data.title_height;
     let update_in_progress = window_tab_data.update_in_progress;
     let config = window_tab_data.common.config;
+
+    let view_mode = window_tab_data.view_mode;
+    let build_target = window_tab_data.build_target;
+    let build_config = window_tab_data.build_config;
+
     stack((
         left(
             workspace.clone(),
@@ -438,12 +684,14 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
             proxy_status,
             num_window_tabs,
         ),
+        view_mode_selector(view_mode, config),
         middle(
             workspace,
             window_tab_data.main_split.clone(),
             workbench_command,
             config,
         ),
+        unreal_toolbar(build_target, build_config, config),
         right(
             window_command,
             workbench_command,
@@ -463,7 +711,7 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
     .style(move |s| {
         let config = config.get();
         s.width_pct(100.0)
-            .height(37.0)
+            .height(42.0)
             .items_center()
             .background(config.color(LapceColor::PANEL_BACKGROUND))
             .border_bottom(1.0)

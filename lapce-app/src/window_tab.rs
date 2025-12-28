@@ -48,6 +48,8 @@ use lsp_types::{
     CodeActionOrCommand, CodeLens, Diagnostic, ProgressParams, ProgressToken,
     ShowMessageParams,
 };
+
+use crate::acp::{AgentStatus, AgentMessage, AgentConnection};
 use serde_json::Value;
 use tracing::{Level, debug, error, event};
 
@@ -91,6 +93,7 @@ use crate::{
         event::{TermEvent, TermNotification, terminal_update_process},
         panel::TerminalPanelData,
     },
+    title::{BuildConfig, ViewMode},
     tracing::*,
     window::WindowCommonData,
     workspace::{LapceWorkspace, LapceWorkspaceType, WorkspaceInfo},
@@ -193,6 +196,17 @@ pub struct WindowTabData {
     pub progresses: RwSignal<IndexMap<ProgressToken, WorkProgress>>,
     pub messages: RwSignal<Vec<(String, ShowMessageParams)>>,
     pub common: Rc<CommonData>,
+    // Unreal Engine IDE state
+    pub view_mode: RwSignal<ViewMode>,
+    pub build_target: RwSignal<String>,
+    pub build_config: RwSignal<BuildConfig>,
+    // ACP Agent state
+    pub agent_status: RwSignal<AgentStatus>,
+    pub agent_session_id: RwSignal<Option<String>>,
+    pub agent_connection: RwSignal<Option<Arc<AgentConnection>>>,
+    pub agent_messages: RwSignal<Vec<AgentMessage>>,
+    // Agent UI state
+    pub agent: crate::agent::AgentData,
 }
 
 impl std::fmt::Debug for WindowTabData {
@@ -574,6 +588,17 @@ impl WindowTabData {
             progresses: cx.create_rw_signal(IndexMap::new()),
             messages: cx.create_rw_signal(Vec::new()),
             common,
+            // Unreal Engine IDE state
+            view_mode: cx.create_rw_signal(ViewMode::Ide),
+            build_target: cx.create_rw_signal("MyGameEditor".to_string()),
+            build_config: cx.create_rw_signal(BuildConfig::Development),
+            // ACP Agent state
+            agent_status: cx.create_rw_signal(AgentStatus::Disconnected),
+            agent_session_id: cx.create_rw_signal(None),
+            agent_connection: cx.create_rw_signal(None),
+            agent_messages: cx.create_rw_signal(Vec::new()),
+            // Agent UI state
+            agent: crate::agent::AgentData::new(cx),
         };
 
         {
