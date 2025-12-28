@@ -5,8 +5,11 @@
 //! - Main chat content area
 //! - Right sidebar with context info
 
+pub mod content;
 pub mod data;
 pub mod icons;
+pub mod input;
+pub mod messages;
 pub mod sidebar;
 pub mod view;
 

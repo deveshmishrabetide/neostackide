@@ -6,6 +6,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use floem::{
     View,
+    action::show_context_menu,
+    menu::{Menu, MenuItem},
     peniko::Color,
     reactive::{ReadSignal, SignalGet, SignalUpdate, SignalWith},
     style::{AlignItems, CursorStyle, Display},
@@ -13,7 +15,7 @@ use floem::{
 };
 
 use super::{
-    data::{AgentData, Chat, ChatStatus},
+    data::{AgentData, AgentProvider, Chat, ChatStatus},
     icons::provider_icon,
 };
 use crate::{
@@ -84,12 +86,16 @@ fn group_chats_by_date(chats: &[Chat]) -> Vec<(DateGroup, Vec<Chat>)> {
     groups
 }
 
-/// Header with "Chats" title, new chat button, and collapse button
+/// Header with "Chats" title, new chat split button, and collapse button
 fn sidebar_header(
     agent: AgentData,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    let agent_clone = agent.clone();
+    let agent_for_new = agent.clone();
+    let agent_for_dropdown = agent.clone();
+    let agent_for_collapse = agent.clone();
+    let current_provider = agent.provider;
+
     h_stack((
         // Title
         text("Chats").style(move |s| {
@@ -99,31 +105,100 @@ fn sidebar_header(
                 .color(config.color(LapceColor::PANEL_FOREGROUND))
                 .flex_grow(1.0)
         }),
-        // New chat button with dropdown
+        // Split button container: [+ with provider icon] [▼]
+        h_stack((
+            // Main new chat button with provider icon overlay
+            container(
+                h_stack((
+                    // Plus icon
+                    svg(move || config.get().ui_svg(LapceIcons::ADD))
+                        .style(move |s| {
+                            let config = config.get();
+                            let size = config.ui.icon_size() as f32;
+                            s.width(size)
+                                .height(size)
+                                .color(config.color(LapceColor::LAPCE_ICON_ACTIVE))
+                        }),
+                    // Small provider icon overlay
+                    svg(move || provider_icon(current_provider.get()).to_string())
+                        .style(move |s| {
+                            s.width(10.0)
+                                .height(10.0)
+                                .margin_left(-4.0)
+                                .margin_top(6.0)
+                        }),
+                ))
+            )
+            .style(move |s| {
+                let config = config.get();
+                s.padding(4.0)
+                    .border_radius(4.0)
+                    .cursor(CursorStyle::Pointer)
+                    .hover(|s| s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND)))
+            })
+            .on_click_stop(move |_| {
+                agent_for_new.new_chat();
+            }),
+            // Separator line
+            empty().style(move |s| {
+                let config = config.get();
+                s.width(1.0)
+                    .height(14.0)
+                    .background(config.color(LapceColor::LAPCE_BORDER))
+            }),
+            // Dropdown arrow button
+            container(
+                svg(move || config.get().ui_svg(LapceIcons::ITEM_OPENED))
+                    .style(move |s| {
+                        let config = config.get();
+                        let size = (config.ui.icon_size() as f32) * 0.7;
+                        s.width(size)
+                            .height(size)
+                            .color(config.color(LapceColor::LAPCE_ICON_ACTIVE))
+                    }),
+            )
+            .style(move |s| {
+                let config = config.get();
+                s.padding_horiz(2.0)
+                    .padding_vert(4.0)
+                    .border_radius(4.0)
+                    .cursor(CursorStyle::Pointer)
+                    .hover(|s| s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND)))
+            })
+            .on_click_stop(move |_| {
+                let agent = agent_for_dropdown.clone();
+                let mut menu = Menu::new("");
+                for provider in AgentProvider::all() {
+                    let p = *provider;
+                    let agent = agent.clone();
+                    menu = menu.entry(
+                        MenuItem::new(provider.display_name()).action(move || {
+                            agent.provider.set(p);
+                            agent.new_chat();
+                        })
+                    );
+                }
+                show_context_menu(menu, None);
+            }),
+        ))
+        .style(move |s| {
+            let config = config.get();
+            s.align_items(AlignItems::Center)
+                .border(1.0)
+                .border_radius(4.0)
+                .border_color(config.color(LapceColor::LAPCE_BORDER))
+        }),
+        // Collapse button
         clickable_icon(
-            || LapceIcons::ADD,
+            || LapceIcons::SIDEBAR_LEFT,
             move || {
-                agent_clone.new_chat();
+                agent_for_collapse.left_sidebar_open.update(|open| *open = !*open);
             },
             || false,
             || false,
-            || "New Chat",
+            || "Toggle Sidebar",
             config,
         ),
-        // Collapse button
-        {
-            let agent = agent.clone();
-            clickable_icon(
-                || LapceIcons::SIDEBAR_LEFT,
-                move || {
-                    agent.left_sidebar_open.update(|open| *open = !*open);
-                },
-                || false,
-                || false,
-                || "Toggle Sidebar",
-                config,
-            )
-        },
     ))
     .style(move |s| {
         let config = config.get();
