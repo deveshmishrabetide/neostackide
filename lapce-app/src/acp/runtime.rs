@@ -169,6 +169,8 @@ impl AgentRuntime {
         workspace_path: PathBuf,
         client: Arc<LapceAcpClient>,
     ) -> anyhow::Result<(ClientSideConnection, String, tokio::process::Child)> {
+        tracing::info!("do_connect: Spawning agent process: {}", config.command);
+
         // Spawn the agent process
         let mut cmd = Command::new(&config.command);
         cmd.args(&config.args)
@@ -188,9 +190,12 @@ impl AgentRuntime {
         }
 
         let mut child = cmd.spawn()?;
+        tracing::info!("do_connect: Agent process spawned successfully");
 
         let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("No stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("No stdout"))?;
+
+        tracing::info!("do_connect: Creating ACP connection...");
 
         // Create the ACP connection - use a reference to the client
         let client_ref = (*client).clone();
@@ -210,6 +215,8 @@ impl AgentRuntime {
             }
         });
 
+        tracing::info!("do_connect: Sending initialize request...");
+
         // Initialize the connection
         let init_request = acp::InitializeRequest::new(ProtocolVersion::V1)
             .client_capabilities(
@@ -227,11 +234,14 @@ impl AgentRuntime {
             );
 
         let _init_response = conn.initialize(init_request).await?;
+        tracing::info!("do_connect: Initialize response received");
 
+        tracing::info!("do_connect: Creating new session...");
         // Create a new session
         let session_request = acp::NewSessionRequest::new(workspace_path);
         let session_response = conn.new_session(session_request).await?;
         let session_id = session_response.session_id.0.to_string();
+        tracing::info!("do_connect: Session created with id: {}", session_id);
 
         Ok((conn, session_id, child))
     }
