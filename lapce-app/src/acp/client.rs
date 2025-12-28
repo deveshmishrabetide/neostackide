@@ -182,6 +182,7 @@ impl Client for LapceAcpClient {
                     .join("\n");
 
                 self.notify(AgentNotification::Message(AgentMessage {
+                    id: 0, // Will be assigned by AgentData
                     role: MessageRole::Agent,
                     content: MessageContent::Thinking(format!("Plan:\n{}", plan_text)),
                     timestamp: std::time::Instant::now(),

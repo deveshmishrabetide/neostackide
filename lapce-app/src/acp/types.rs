@@ -106,6 +106,8 @@ pub enum AgentStatus {
 /// A message in the agent conversation
 #[derive(Debug, Clone)]
 pub struct AgentMessage {
+    /// Unique ID for this message (used for stable UI keying)
+    pub id: u64,
     /// Who sent the message
     pub role: MessageRole,
     /// The message content

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Utc};
 use floem::ext_event::create_signal_from_channel;
@@ -136,6 +137,9 @@ pub struct AgentData {
 
     /// Pending prompt to send when connection is established
     pub pending_prompt: RwSignal<Option<String>>,
+
+    /// Counter for generating unique message IDs
+    message_id_counter: Arc<AtomicU64>,
 }
 
 impl AgentData {
@@ -192,7 +196,13 @@ impl AgentData {
             input_value: cx.create_rw_signal(String::new()),
             error_message: cx.create_rw_signal(None),
             pending_prompt: cx.create_rw_signal(None),
+            message_id_counter: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Generate a unique message ID
+    fn next_message_id(&self) -> u64 {
+        self.message_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Connect to an agent with the given provider
@@ -260,6 +270,7 @@ impl AgentData {
             // Add user message
             tracing::info!("Adding user message to chat: {}", chat_id);
             self.add_message(&chat_id, AgentMessage {
+                id: self.next_message_id(),
                 role: MessageRole::User,
                 content: MessageContent::Text(prompt.clone()),
                 timestamp: std::time::Instant::now(),
@@ -413,6 +424,7 @@ impl AgentData {
         if let Some(text) = text {
             if !text.is_empty() {
                 self.add_message(chat_id, AgentMessage {
+                    id: self.next_message_id(),
                     role: crate::acp::MessageRole::Agent,
                     content: crate::acp::MessageContent::Text(text),
                     timestamp: std::time::Instant::now(),
@@ -481,14 +493,19 @@ impl AgentData {
                     self.append_streaming_text(chat_id, &text);
                 }
             }
-            AgentNotification::Message(message) => {
+            AgentNotification::Message(mut message) => {
                 if let Some(ref chat_id) = chat_id {
+                    // Assign an ID if the message doesn't have one
+                    if message.id == 0 {
+                        message.id = self.next_message_id();
+                    }
                     self.add_message(chat_id, message);
                 }
             }
             AgentNotification::ToolStarted { tool_id: _, name, input: _ } => {
                 if let Some(ref chat_id) = chat_id {
                     self.add_message(chat_id, AgentMessage {
+                        id: self.next_message_id(),
                         role: MessageRole::Agent,
                         content: MessageContent::ToolUse {
                             name,
@@ -506,6 +523,7 @@ impl AgentData {
                         ToolUseStatus::Failed
                     };
                     self.add_message(chat_id, AgentMessage {
+                        id: self.next_message_id(),
                         role: MessageRole::Agent,
                         content: MessageContent::ToolUse { name, status },
                         timestamp: std::time::Instant::now(),

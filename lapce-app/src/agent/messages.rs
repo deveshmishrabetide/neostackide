@@ -6,7 +6,7 @@ use floem::{
     IntoView, View,
     reactive::{ReadSignal, SignalGet},
     style::{AlignItems, Display},
-    views::{Decorators, container, dyn_stack, empty, h_stack, label, scroll, text, v_stack},
+    views::{Decorators, container, dyn_stack, empty, h_stack, scroll, text, v_stack},
 };
 use im::Vector;
 
@@ -265,23 +265,11 @@ pub fn message_list(
                 dyn_stack(
                     move || {
                         let msgs = messages_fn();
-                        msgs.iter().cloned().enumerate().collect::<Vec<_>>()
+                        msgs.iter().cloned().collect::<Vec<_>>()
                     },
-                    |(idx, _msg)| *idx,
-                    move |(idx, msg)| {
-                        // Simplified message view for debugging
-                        let role_str = match msg.role {
-                            MessageRole::User => "User",
-                            MessageRole::Agent => "Agent",
-                            MessageRole::System => "System",
-                        };
-                        label(move || format!("[{}] Message {}", role_str, idx))
-                            .style(move |s| {
-                                let config = config.get();
-                                s.padding(8.0)
-                                    .margin_bottom(4.0)
-                                    .background(config.color(LapceColor::PANEL_BACKGROUND))
-                            })
+                    |msg| msg.id,  // Use message ID as stable key
+                    move |msg| {
+                        message_view(msg, config)
                     },
                 )
                 .style(|s| s.flex_col().width_full()),
