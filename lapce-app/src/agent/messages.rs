@@ -181,7 +181,7 @@ fn message_content_view(
 
 /// Streaming text indicator
 fn streaming_view(
-    streaming_text: String,
+    streaming_text: impl Fn() -> String + 'static,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
     v_stack((
@@ -195,7 +195,7 @@ fn streaming_view(
         }),
         // Streaming content with cursor
         h_stack((
-            text(streaming_text).style(move |s| {
+            floem::views::label(streaming_text).style(move |s| {
                 let config = config.get();
                 s.font_size(13.0)
                     .color(config.color(LapceColor::EDITOR_FOREGROUND))
@@ -248,8 +248,8 @@ fn empty_state(config: ReadSignal<Arc<LapceConfig>>) -> impl View {
 /// The message list component
 pub fn message_list(
     messages: impl Fn() -> Vector<AgentMessage> + 'static,
-    streaming_text: impl Fn() -> String + 'static,
-    is_streaming: impl Fn() -> bool + 'static,
+    streaming_text: impl Fn() -> String + 'static + Clone,
+    is_streaming: impl Fn() -> bool + 'static + Clone,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
     let messages_fn = messages;
@@ -270,15 +270,20 @@ pub fn message_list(
                 )
                 .style(|s| s.flex_col().width_full()),
                 // Streaming text
-                container(
-                    streaming_view(streaming_text_fn(), config)
-                ).style(move |s| {
-                    if is_streaming_fn() && !streaming_text_fn().is_empty() {
-                        s
-                    } else {
-                        s.display(Display::None)
-                    }
-                }),
+                {
+                    let streaming_text_fn = streaming_text_fn.clone();
+                    let streaming_text_fn2 = streaming_text_fn.clone();
+                    let is_streaming_fn = is_streaming_fn.clone();
+                    container(
+                        streaming_view(move || streaming_text_fn(), config)
+                    ).style(move |s| {
+                        if is_streaming_fn() && !streaming_text_fn2().is_empty() {
+                            s
+                        } else {
+                            s.display(Display::None)
+                        }
+                    })
+                },
             ))
             .style(|s| s.flex_col().width_full()),
         )
