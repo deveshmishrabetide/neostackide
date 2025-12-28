@@ -24,11 +24,12 @@ pub struct AgentConfig {
 }
 
 impl AgentConfig {
-    /// Create a config for Claude Code
+    /// Create a config for Claude Code (via ACP adapter)
+    /// Uses the @zed-industries/claude-code-acp npm package
     pub fn claude_code() -> Self {
         Self {
             name: "Claude Code".to_string(),
-            command: "claude".to_string(),
+            command: "claude-code-acp".to_string(),
             args: vec![],
             env: vec![],
             cwd: None,
