@@ -40,6 +40,7 @@ pub fn agent_input(
                 // Text input
                 text_input(input_value)
                     .placeholder("Message the agent...")
+                    .keyboard_navigable()
                     .style(move |s| {
                         let config = config.get();
                         s.flex_grow(1.0)
@@ -47,9 +48,10 @@ pub fn agent_input(
                             .font_size(13.0)
                             .background(Color::TRANSPARENT)
                             .border(0.0)
+                            .outline(0.0)
                             .color(config.color(LapceColor::EDITOR_FOREGROUND))
                     })
-                    .on_event_stop(EventListener::KeyDown, move |event| {
+                    .on_event_cont(EventListener::KeyDown, move |event| {
                         if let Event::KeyDown(key_event) = event {
                             if key_event.key.logical_key == Key::Named(NamedKey::Enter)
                                 && !key_event.modifiers.shift()

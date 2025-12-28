@@ -210,6 +210,21 @@ impl AgentData {
             if let Some(chat_id) = self.current_chat_id.get_untracked() {
                 self.set_streaming(&chat_id, true);
 
+                // Check if this is the first message - update chat title
+                let is_first_message = self.messages.with(|msgs| {
+                    msgs.get(&chat_id).map(|m| m.is_empty()).unwrap_or(true)
+                });
+
+                if is_first_message {
+                    // Use first ~50 chars of the prompt as the chat title
+                    let title = if prompt.len() > 50 {
+                        format!("{}...", &prompt[..47])
+                    } else {
+                        prompt.clone()
+                    };
+                    self.update_chat_title(&chat_id, &title);
+                }
+
                 // Add user message
                 self.add_message(&chat_id, AgentMessage {
                     role: MessageRole::User,
@@ -244,11 +259,32 @@ impl AgentData {
             chats.push_front(chat);
         });
         self.current_chat_id.set(Some(chat_id));
+
+        // Auto-connect if not already connected
+        self.ensure_connected();
     }
 
     /// Select a chat by ID
     pub fn select_chat(&self, chat_id: &str) {
         self.current_chat_id.set(Some(chat_id.to_string()));
+
+        // Auto-connect if not already connected
+        self.ensure_connected();
+    }
+
+    /// Ensure we are connected to an agent, connecting if necessary
+    fn ensure_connected(&self) {
+        let status = self.agent_status.get_untracked();
+        match status {
+            AgentStatus::Disconnected | AgentStatus::Error => {
+                // Need to connect
+                let provider = self.provider.get_untracked();
+                self.connect(provider);
+            }
+            AgentStatus::Connecting | AgentStatus::Connected | AgentStatus::Processing => {
+                // Already connected or connecting, nothing to do
+            }
+        }
     }
 
     /// Get the current chat
@@ -431,6 +467,22 @@ impl AgentData {
                 if let Some(ref chat_id) = chat_id {
                     self.add_permission_request(chat_id, request);
                 }
+            }
+            AgentNotification::TurnCompleted { stop_reason: _ } => {
+                if let Some(ref chat_id) = chat_id {
+                    // Flush the streaming buffer to create a complete message
+                    self.flush_streaming_text(chat_id);
+                    // End streaming state
+                    self.set_streaming(chat_id, false);
+                    // Update chat status to completed
+                    self.chats.update(|chats| {
+                        if let Some(chat) = chats.iter_mut().find(|c| &c.id == chat_id) {
+                            chat.status = ChatStatus::Completed;
+                        }
+                    });
+                }
+                // Update agent status back to connected/ready
+                self.agent_status.set(AgentStatus::Connected);
             }
             AgentNotification::Error { message } => {
                 self.set_error(Some(message));

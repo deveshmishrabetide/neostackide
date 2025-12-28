@@ -238,6 +238,10 @@ pub enum AgentNotification {
     },
     /// Permission request from agent
     PermissionRequest(PermissionRequest),
+    /// Turn/response completed (flush streaming buffer)
+    TurnCompleted {
+        stop_reason: Option<String>,
+    },
     /// Error occurred
     Error { message: String },
 }

@@ -108,11 +108,19 @@ impl AgentRuntime {
                         let result = Self::do_prompt(&connection, prompt).await;
                         match result {
                             Ok(stop_reason) => {
+                                // Send turn completed notification to flush streaming buffer
+                                let _ = notification_tx.send(AgentNotification::TurnCompleted {
+                                    stop_reason: stop_reason.clone(),
+                                });
                                 rpc.handle_response(id, Ok(AgentResponse::PromptCompleted {
                                     stop_reason,
                                 }));
                             }
                             Err(e) => {
+                                // Also send turn completed on error to flush any partial content
+                                let _ = notification_tx.send(AgentNotification::TurnCompleted {
+                                    stop_reason: None,
+                                });
                                 let _ = notification_tx.send(AgentNotification::Error {
                                     message: e.clone(),
                                 });
