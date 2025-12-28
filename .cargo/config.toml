@@ -6,4 +6,4 @@ rustflags = ["-C", "target-feature=+crt-static"]
 dev = "run -p lapce-app"
 
 [env]
-RUST_LOG = "lapce_app=debug"
+LAPCE_LOG = "lapce_app=debug"

@@ -235,8 +235,11 @@ impl AgentData {
 
     /// Internal: actually send the prompt (when we have a session_id)
     fn do_send_prompt(&self, session_id: String, prompt: String) {
+        tracing::info!("do_send_prompt called with session_id: {}", session_id);
+
         // Mark current chat as streaming
         if let Some(chat_id) = self.current_chat_id.get_untracked() {
+            tracing::info!("Current chat_id: {}", chat_id);
             self.set_streaming(&chat_id, true);
 
             // Check if this is the first message - update chat title
@@ -255,11 +258,20 @@ impl AgentData {
             }
 
             // Add user message
+            tracing::info!("Adding user message to chat: {}", chat_id);
             self.add_message(&chat_id, AgentMessage {
                 role: MessageRole::User,
                 content: MessageContent::Text(prompt.clone()),
                 timestamp: std::time::Instant::now(),
             });
+
+            // Log the message count after adding
+            let count = self.messages.with(|msgs| {
+                msgs.get(&chat_id).map(|m| m.len()).unwrap_or(0)
+            });
+            tracing::info!("Messages in chat after adding: {}", count);
+        } else {
+            tracing::warn!("No current chat_id when trying to send prompt");
         }
 
         self.agent_status.set(AgentStatus::Processing);
@@ -326,11 +338,13 @@ impl AgentData {
     /// Get messages for the current chat
     pub fn current_messages(&self) -> Vector<AgentMessage> {
         let current_id = self.current_chat_id.get();
-        current_id
+        let messages = current_id.clone()
             .and_then(|id| {
                 self.messages.with(|msgs| msgs.get(&id).cloned())
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        tracing::debug!("current_messages() returning {} messages for chat {:?}", messages.len(), current_id);
+        messages
     }
 
     /// Check if current chat is streaming
