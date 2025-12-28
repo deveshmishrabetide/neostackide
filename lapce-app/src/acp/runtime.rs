@@ -192,6 +192,18 @@ impl AgentRuntime {
         let mut child = cmd.spawn()?;
         tracing::info!("do_connect: Agent process spawned successfully");
 
+        // Spawn a task to capture and log stderr
+        if let Some(stderr) = child.stderr.take() {
+            tokio::task::spawn_local(async move {
+                use tokio::io::AsyncBufReadExt;
+                let reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    tracing::warn!("Agent stderr: {}", line);
+                }
+            });
+        }
+
         let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("No stdin"))?;
         let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("No stdout"))?;
 
