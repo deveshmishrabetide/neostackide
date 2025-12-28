@@ -187,7 +187,7 @@ pub struct PermissionResponse {
     pub selected_option: Option<String>,
 }
 
-/// Events emitted by the ACP client for UI updates
+/// Events emitted by the ACP client for UI updates (legacy)
 #[derive(Debug, Clone)]
 pub enum AcpEvent {
     /// Agent status changed
@@ -206,4 +206,38 @@ pub enum AcpEvent {
     SessionCreated { session_id: SessionId },
     /// Error occurred
     Error(String),
+}
+
+/// Notifications from the agent runtime to the UI
+///
+/// This is the new, cleaner notification type following Lapce's pattern.
+#[derive(Debug, Clone)]
+pub enum AgentNotification {
+    /// Successfully connected to agent
+    Connected { session_id: String },
+    /// Disconnected from agent
+    Disconnected,
+    /// Agent status changed
+    StatusChanged(AgentStatus),
+    /// Text chunk received (for streaming display)
+    TextChunk { text: String },
+    /// Complete message received (add to history)
+    Message(AgentMessage),
+    /// Tool call started
+    ToolStarted {
+        tool_id: String,
+        name: String,
+        input: Option<String>,
+    },
+    /// Tool call completed
+    ToolCompleted {
+        tool_id: String,
+        name: String,
+        success: bool,
+        output: Option<String>,
+    },
+    /// Permission request from agent
+    PermissionRequest(PermissionRequest),
+    /// Error occurred
+    Error { message: String },
 }

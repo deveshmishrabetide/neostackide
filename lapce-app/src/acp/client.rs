@@ -29,6 +29,18 @@ use super::{
 };
 use agent_client_protocol::ToolCallStatus;
 
+/// Convert ContentBlock to text (helper function)
+fn content_block_to_text(content: &ContentBlock) -> String {
+    match content {
+        ContentBlock::Text(text_content) => text_content.text.clone(),
+        ContentBlock::Image(_) => "[Image]".to_string(),
+        ContentBlock::Audio(_) => "[Audio]".to_string(),
+        ContentBlock::ResourceLink(link) => format!("[Link: {}]", link.uri),
+        ContentBlock::Resource(_) => "[Resource]".to_string(),
+        _ => "[Unknown content]".to_string(),
+    }
+}
+
 /// Lapce's implementation of the ACP Client trait.
 ///
 /// This handles all callbacks from the agent, including:
@@ -36,11 +48,12 @@ use agent_client_protocol::ToolCallStatus;
 /// - Terminal creation and management
 /// - Permission requests
 /// - Session notifications (agent output)
+#[derive(Clone)]
 pub struct LapceAcpClient {
     /// Working directory for file operations
     workspace_path: PathBuf,
-    /// Channel to send events to the UI
-    event_tx: Sender<AcpEvent>,
+    /// Channel to send notifications to the UI
+    notification_tx: Sender<AgentNotification>,
     /// Active terminals created by the agent
     terminals: Arc<RwLock<HashMap<String, TerminalState>>>,
     /// Pending permission requests
@@ -59,10 +72,10 @@ struct TerminalState {
 
 impl LapceAcpClient {
     /// Create a new ACP client
-    pub fn new(workspace_path: PathBuf, event_tx: Sender<AcpEvent>) -> Self {
+    pub fn new(workspace_path: PathBuf, notification_tx: Sender<AgentNotification>) -> Self {
         Self {
             workspace_path,
-            event_tx,
+            notification_tx,
             terminals: Arc::new(RwLock::new(HashMap::new())),
             permission_requests: Arc::new(RwLock::new(HashMap::new())),
             session_id: Arc::new(RwLock::new(None)),
@@ -74,9 +87,9 @@ impl LapceAcpClient {
         *self.session_id.write() = Some(session_id);
     }
 
-    /// Send an event to the UI
-    fn send_event(&self, event: AcpEvent) {
-        let _ = self.event_tx.send(event);
+    /// Send a notification to the UI
+    fn notify(&self, notification: AgentNotification) {
+        let _ = self.notification_tx.send(notification);
     }
 
     /// Resolve a path relative to the workspace
