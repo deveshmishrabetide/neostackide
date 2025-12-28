@@ -130,63 +130,49 @@ impl Client for LapceAcpClient {
         match args.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 // Extract text from content block
-                let text = match chunk.content {
-                    ContentBlock::Text(text_content) => text_content.text,
-                    ContentBlock::Image(_) => "[Image]".to_string(),
-                    ContentBlock::Audio(_) => "[Audio]".to_string(),
-                    ContentBlock::ResourceLink(link) => {
-                        format!("[Link: {}]", link.uri)
-                    }
-                    ContentBlock::Resource(_) => "[Resource]".to_string(),
-                    _ => "[Unknown content]".to_string(),
-                };
+                let text = content_block_to_text(&chunk.content);
 
-                // Send chunk to UI for streaming display
-                self.send_event(AcpEvent::MessageChunk { text: text.clone() });
-
-                // Also send as a full message for history
-                self.send_event(AcpEvent::MessageReceived(AgentMessage {
-                    role: MessageRole::Agent,
-                    content: MessageContent::Text(text),
-                    timestamp: std::time::Instant::now(),
-                }));
+                // Only send TextChunk for streaming display
+                // The UI will accumulate chunks and create a complete Message when done
+                self.notify(AgentNotification::TextChunk { text });
             }
 
             SessionUpdate::ToolCall(tool_call) => {
                 let input = tool_call.raw_input
                     .as_ref()
-                    .and_then(|v| serde_json::to_string_pretty(v).ok())
-                    .unwrap_or_else(|| "[no input]".to_string());
+                    .and_then(|v| serde_json::to_string_pretty(v).ok());
 
-                self.send_event(AcpEvent::ToolUseStarted {
+                self.notify(AgentNotification::ToolStarted {
+                    tool_id: tool_call.tool_call_id.0.to_string(),
                     name: tool_call.title.clone(),
                     input,
                 });
-
-                self.send_event(AcpEvent::MessageReceived(AgentMessage {
-                    role: MessageRole::System,
-                    content: MessageContent::ToolUse {
-                        name: tool_call.title,
-                        status: ToolUseStatus::InProgress,
-                    },
-                    timestamp: std::time::Instant::now(),
-                }));
             }
 
             SessionUpdate::ToolCallUpdate(update) => {
-                // Check status from the fields
                 let success = update.fields.status
                     .map(|s| matches!(s, ToolCallStatus::Completed))
                     .unwrap_or(true);
 
-                self.send_event(AcpEvent::ToolUseCompleted {
-                    name: update.tool_call_id.0.to_string(),
+                // Get output if available
+                let output = update.fields.output
+                    .map(|blocks| {
+                        blocks.iter()
+                            .map(|b| content_block_to_text(b))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    });
+
+                self.notify(AgentNotification::ToolCompleted {
+                    tool_id: update.tool_call_id.0.to_string(),
+                    name: update.tool_call_id.0.to_string(), // TODO: Get actual name
                     success,
+                    output,
                 });
             }
 
             SessionUpdate::Plan(plan) => {
-                // Agent shared its plan - could display in UI
+                // Agent shared its plan - display as thinking message
                 let plan_text = plan
                     .entries
                     .iter()
@@ -194,7 +180,7 @@ impl Client for LapceAcpClient {
                     .collect::<Vec<_>>()
                     .join("\n");
 
-                self.send_event(AcpEvent::MessageReceived(AgentMessage {
+                self.notify(AgentNotification::Message(AgentMessage {
                     role: MessageRole::Agent,
                     content: MessageContent::Thinking(format!("Plan:\n{}", plan_text)),
                     timestamp: std::time::Instant::now(),
@@ -361,7 +347,7 @@ impl Client for LapceAcpClient {
             .collect();
 
         // Send permission request to UI
-        self.send_event(AcpEvent::PermissionRequested(super::types::PermissionRequest {
+        self.notify(AgentNotification::PermissionRequest(super::types::PermissionRequest {
             id: request_id.clone(),
             description: format!("Tool call: {:?}", args.tool_call.tool_call_id),
             options,
