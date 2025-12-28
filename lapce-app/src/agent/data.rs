@@ -419,8 +419,9 @@ impl AgentData {
     }
 
     /// Flush streaming text to a message
+    /// Uses untracked reads to avoid creating reactive dependencies
     pub fn flush_streaming_text(&self, chat_id: &str) {
-        let text = self.streaming_text.with(|s| s.get(chat_id).cloned());
+        let text = self.streaming_text.with_untracked(|s| s.get(chat_id).cloned());
         if let Some(text) = text {
             if !text.is_empty() {
                 self.add_message(chat_id, AgentMessage {
