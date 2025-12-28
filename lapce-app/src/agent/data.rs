@@ -1,14 +1,18 @@
 //! Agent data structures and state management
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use floem::reactive::{RwSignal, Scope, SignalGet, SignalUpdate, SignalWith};
+use floem::ext_event::create_signal_from_channel;
+use floem::reactive::{ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith};
 use im::{HashMap, Vector};
 use uuid::Uuid;
 
 use crate::acp::{
-    AgentConnection, AgentMessage, AgentStatus, AcpEvent, PermissionRequest,
+    AgentConfig, AgentMessage, AgentNotification, AgentRpcHandler, AgentStatus,
+    MessageContent, MessageRole, PermissionRequest, ToolUseStatus,
+    start_agent_runtime,
 };
 
 /// The AI provider for agent interactions
@@ -83,7 +87,7 @@ impl Chat {
 #[derive(Clone)]
 pub struct AgentData {
     /// Scope for creating signals
-    scope: Scope,
+    pub scope: Scope,
 
     /// Whether the left sidebar is open
     pub left_sidebar_open: RwSignal<bool>,
@@ -115,8 +119,14 @@ pub struct AgentData {
     /// Agent connection status
     pub agent_status: RwSignal<AgentStatus>,
 
-    /// Active agent connection
-    pub agent_connection: RwSignal<Option<Arc<AgentConnection>>>,
+    /// Current session ID (from agent connection)
+    pub session_id: RwSignal<Option<String>>,
+
+    /// RPC handler for communicating with agent runtime
+    pub rpc: Arc<AgentRpcHandler>,
+
+    /// Notification signal from agent runtime
+    pub notification: ReadSignal<Option<AgentNotification>>,
 
     /// Input text for the chat
     pub input_value: RwSignal<String>,
@@ -126,13 +136,40 @@ pub struct AgentData {
 }
 
 impl AgentData {
-    pub fn new(cx: Scope) -> Self {
+    pub fn new(cx: Scope, workspace_path: PathBuf) -> Self {
         // Create some sample chats for development
         let sample_chats = Vector::from(vec![
             Chat::new("Implementing user auth", AgentProvider::Claude),
             Chat::new("Fix database migration", AgentProvider::Codex),
             Chat::new("Refactor API endpoints", AgentProvider::Claude),
         ]);
+
+        // Create the RPC handler and notification channels
+        // We use crossbeam for the runtime (thread-safe), and mpsc for Floem signal
+        let rpc = Arc::new(AgentRpcHandler::new());
+        let (runtime_tx, runtime_rx) = crossbeam_channel::unbounded();
+        let (ui_tx, ui_rx) = std::sync::mpsc::channel();
+
+        // Bridge the crossbeam channel to mpsc for Floem
+        std::thread::spawn({
+            move || {
+                for notification in runtime_rx {
+                    if ui_tx.send(notification).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Start the agent runtime in a background thread
+        start_agent_runtime(
+            (*rpc).clone(),
+            runtime_tx,
+            workspace_path,
+        );
+
+        // Create a signal from the mpsc channel (Floem requires mpsc)
+        let notification = create_signal_from_channel(ui_rx);
 
         Self {
             scope: cx,
@@ -146,9 +183,54 @@ impl AgentData {
             is_streaming: cx.create_rw_signal(HashMap::new()),
             pending_permissions: cx.create_rw_signal(HashMap::new()),
             agent_status: cx.create_rw_signal(AgentStatus::Disconnected),
-            agent_connection: cx.create_rw_signal(None),
+            session_id: cx.create_rw_signal(None),
+            rpc,
+            notification,
             input_value: cx.create_rw_signal(String::new()),
             error_message: cx.create_rw_signal(None),
+        }
+    }
+
+    /// Connect to an agent with the given provider
+    pub fn connect(&self, provider: AgentProvider) {
+        let config = match provider {
+            AgentProvider::Claude => AgentConfig::claude_code(),
+            AgentProvider::Codex => AgentConfig::codex(),
+            AgentProvider::Gemini => AgentConfig::gemini_cli(),
+        };
+
+        self.agent_status.set(AgentStatus::Connecting);
+        self.rpc.connect(config, PathBuf::from("."));
+    }
+
+    /// Send a prompt to the agent
+    pub fn send_prompt(&self, prompt: String) {
+        if let Some(session_id) = self.session_id.get_untracked() {
+            // Mark current chat as streaming
+            if let Some(chat_id) = self.current_chat_id.get_untracked() {
+                self.set_streaming(&chat_id, true);
+
+                // Add user message
+                self.add_message(&chat_id, AgentMessage {
+                    role: MessageRole::User,
+                    content: MessageContent::Text(prompt.clone()),
+                    timestamp: std::time::Instant::now(),
+                });
+            }
+
+            self.agent_status.set(AgentStatus::Processing);
+            self.rpc.prompt_async(session_id, prompt, |_result| {
+                // Response will come through notification channel
+            });
+        } else {
+            self.set_error(Some("Not connected to agent".to_string()));
+        }
+    }
+
+    /// Cancel the current operation
+    pub fn cancel(&self) {
+        if let Some(session_id) = self.session_id.get_untracked() {
+            self.rpc.cancel(session_id);
         }
     }
 
@@ -293,55 +375,88 @@ impl AgentData {
         self.error_message.set(None);
     }
 
-    /// Handle an ACP event
-    pub fn handle_acp_event(&self, chat_id: &str, event: AcpEvent) {
-        match event {
-            AcpEvent::StatusChanged(status) => {
+    /// Handle a notification from the agent runtime
+    pub fn handle_notification(&self, notification: AgentNotification) {
+        let chat_id = self.current_chat_id.get_untracked();
+
+        match notification {
+            AgentNotification::Connected { session_id } => {
+                self.session_id.set(Some(session_id));
+                self.agent_status.set(AgentStatus::Connected);
+            }
+            AgentNotification::Disconnected => {
+                self.session_id.set(None);
+                self.agent_status.set(AgentStatus::Disconnected);
+            }
+            AgentNotification::StatusChanged(status) => {
                 self.agent_status.set(status);
             }
-            AcpEvent::MessageReceived(message) => {
-                self.add_message(chat_id, message);
+            AgentNotification::TextChunk { text } => {
+                if let Some(ref chat_id) = chat_id {
+                    self.append_streaming_text(chat_id, &text);
+                }
             }
-            AcpEvent::MessageChunk { text } => {
-                self.append_streaming_text(chat_id, &text);
+            AgentNotification::Message(message) => {
+                if let Some(ref chat_id) = chat_id {
+                    self.add_message(chat_id, message);
+                }
             }
-            AcpEvent::ToolUseStarted { name, input: _ } => {
-                self.add_message(chat_id, AgentMessage {
-                    role: crate::acp::MessageRole::Agent,
-                    content: crate::acp::MessageContent::ToolUse {
-                        name,
-                        status: crate::acp::ToolUseStatus::InProgress,
-                    },
-                    timestamp: std::time::Instant::now(),
-                });
+            AgentNotification::ToolStarted { tool_id: _, name, input: _ } => {
+                if let Some(ref chat_id) = chat_id {
+                    self.add_message(chat_id, AgentMessage {
+                        role: MessageRole::Agent,
+                        content: MessageContent::ToolUse {
+                            name,
+                            status: ToolUseStatus::InProgress,
+                        },
+                        timestamp: std::time::Instant::now(),
+                    });
+                }
             }
-            AcpEvent::ToolUseCompleted { name, success } => {
-                let status = if success {
-                    crate::acp::ToolUseStatus::Success
-                } else {
-                    crate::acp::ToolUseStatus::Failed
-                };
-                self.add_message(chat_id, AgentMessage {
-                    role: crate::acp::MessageRole::Agent,
-                    content: crate::acp::MessageContent::ToolUse { name, status },
-                    timestamp: std::time::Instant::now(),
-                });
+            AgentNotification::ToolCompleted { tool_id: _, name, success, output: _ } => {
+                if let Some(ref chat_id) = chat_id {
+                    let status = if success {
+                        ToolUseStatus::Success
+                    } else {
+                        ToolUseStatus::Failed
+                    };
+                    self.add_message(chat_id, AgentMessage {
+                        role: MessageRole::Agent,
+                        content: MessageContent::ToolUse { name, status },
+                        timestamp: std::time::Instant::now(),
+                    });
+                }
             }
-            AcpEvent::PermissionRequested(request) => {
-                self.add_permission_request(chat_id, request);
+            AgentNotification::PermissionRequest(request) => {
+                if let Some(ref chat_id) = chat_id {
+                    self.add_permission_request(chat_id, request);
+                }
             }
-            AcpEvent::SessionCreated { session_id: _ } => {
-                // Session created, ready to chat
-            }
-            AcpEvent::Error(error) => {
-                self.set_error(Some(error.clone()));
-                self.chats.update(|chats| {
-                    if let Some(chat) = chats.iter_mut().find(|c| c.id == chat_id) {
-                        chat.status = ChatStatus::Error;
-                    }
-                });
+            AgentNotification::Error { message } => {
+                self.set_error(Some(message));
+                if let Some(ref chat_id) = chat_id {
+                    self.chats.update(|chats| {
+                        if let Some(chat) = chats.iter_mut().find(|c| &c.id == chat_id) {
+                            chat.status = ChatStatus::Error;
+                        }
+                    });
+                    // End streaming on error
+                    self.set_streaming(chat_id, false);
+                }
             }
         }
+    }
+
+    /// Set up notification processing effect (call once after creation)
+    pub fn setup_notification_effect(&self) {
+        let agent = self.clone();
+        let notification = self.notification;
+
+        self.scope.create_effect(move |_| {
+            if let Some(notification) = notification.get() {
+                agent.handle_notification(notification);
+            }
+        });
     }
 
     /// Update chat title based on first message

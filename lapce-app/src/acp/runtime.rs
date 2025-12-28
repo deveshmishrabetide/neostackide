@@ -11,13 +11,14 @@ use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 use tokio::process::Command;
 use tokio::runtime::Runtime;
+use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::client::LapceAcpClient;
 use super::rpc::{AgentRpc, AgentRpcHandler, AgentResponse};
 use super::types::*;
 use super::{
-    acp, ClientSideConnection, ProtocolVersion, Implementation,
+    acp, Agent, ClientSideConnection, ProtocolVersion, Implementation,
     ClientCapabilities, FileSystemCapability, CancelNotification,
 };
 
@@ -66,6 +67,7 @@ impl AgentRuntime {
     pub fn run(self) {
         // Create a tokio runtime for this thread
         let rt = Runtime::new().expect("Failed to create tokio runtime");
+        let local = LocalSet::new();
 
         // Process RPC commands
         for msg in self.rpc.rx().iter() {
@@ -75,7 +77,8 @@ impl AgentRuntime {
                     let notification_tx = self.notification_tx.clone();
                     let client = self.client.clone();
 
-                    rt.block_on(async {
+                    // Run with LocalSet for spawn_local support
+                    local.block_on(&rt, async {
                         match Self::do_connect(config, workspace_path, client).await {
                             Ok((conn, session_id, child)) => {
                                 *connection.write() = Some(ActiveConnection {
@@ -101,7 +104,7 @@ impl AgentRuntime {
                     let rpc = self.rpc.clone();
                     let notification_tx = self.notification_tx.clone();
 
-                    rt.block_on(async {
+                    local.block_on(&rt, async {
                         let result = Self::do_prompt(&connection, prompt).await;
                         match result {
                             Ok(stop_reason) => {
@@ -123,7 +126,7 @@ impl AgentRuntime {
                     let connection = self.connection.clone();
                     let notification_tx = self.notification_tx.clone();
 
-                    rt.block_on(async {
+                    local.block_on(&rt, async {
                         if let Err(e) = Self::do_cancel(&connection).await {
                             let _ = notification_tx.send(AgentNotification::Error {
                                 message: e,
@@ -184,12 +187,12 @@ impl AgentRuntime {
             stdin.compat_write(),
             stdout.compat(),
             |fut| {
-                tokio::spawn(fut);
+                tokio::task::spawn_local(fut);
             },
         );
 
-        // Spawn the I/O handler
-        tokio::spawn(async move {
+        // Spawn the I/O handler locally (not Send)
+        tokio::task::spawn_local(async move {
             if let Err(e) = io_task.await {
                 tracing::error!("ACP I/O error: {}", e);
             }
@@ -228,13 +231,13 @@ impl AgentRuntime {
         let conn_guard = connection.read();
         let active = conn_guard.as_ref().ok_or("Not connected")?;
 
+        let session_id = active.session_id.clone();
         let prompt_request = acp::PromptRequest::new(
-            acp::SessionId::new(&active.session_id),
+            acp::SessionId::new(session_id.as_str()),
             vec![prompt.into()],
         );
 
-        // Drop the guard before await
-        let session_id = active.session_id.clone();
+        // Drop the guard before await since we can't hold it across await
         drop(conn_guard);
 
         // Re-acquire for the call
@@ -246,7 +249,7 @@ impl AgentRuntime {
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(response.stop_reason.map(|r| format!("{:?}", r)))
+        Ok(Some(format!("{:?}", response.stop_reason)))
     }
 
     async fn do_cancel(
@@ -254,9 +257,10 @@ impl AgentRuntime {
     ) -> Result<(), String> {
         let conn_guard = connection.read();
         let active = conn_guard.as_ref().ok_or("Not connected")?;
+        let session_id = active.session_id.clone();
 
         let cancel = CancelNotification::new(
-            acp::SessionId::new(&active.session_id)
+            acp::SessionId::new(session_id.as_str())
         );
 
         active.conn

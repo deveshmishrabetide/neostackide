@@ -30,10 +30,10 @@ pub struct AgentConnection {
     config: AgentConfig,
     /// Current status
     status: RwSignal<AgentStatus>,
-    /// Event receiver for UI
-    event_rx: Receiver<AcpEvent>,
+    /// Event receiver for UI (notifications from agent)
+    event_rx: Receiver<AgentNotification>,
     /// Event sender (held by client)
-    event_tx: Sender<AcpEvent>,
+    event_tx: Sender<AgentNotification>,
     /// The ACP client implementation
     client: Arc<LapceAcpClient>,
     /// Current session ID
@@ -76,7 +76,7 @@ impl AgentConnection {
     }
 
     /// Get the event receiver for UI updates
-    pub fn event_rx(&self) -> &Receiver<AcpEvent> {
+    pub fn event_rx(&self) -> &Receiver<AgentNotification> {
         &self.event_rx
     }
 
@@ -103,7 +103,7 @@ impl AgentConnection {
     /// Connect to the agent and start a session
     pub async fn connect(&self) -> Result<()> {
         self.status.set(AgentStatus::Connecting);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Connecting));
+        self.notify(AgentNotification::StatusChanged(AgentStatus::Connecting));
 
         // Spawn the agent process
         let mut cmd = Command::new(&self.config.command);
@@ -200,8 +200,8 @@ impl AgentConnection {
         *self.connection.write() = Some(ConnectionHandle { conn, _child: child });
 
         self.status.set(AgentStatus::Connected);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Connected));
-        self.send_event(AcpEvent::SessionCreated { session_id: session_id.0.to_string() });
+        self.notify(AgentNotification::StatusChanged(AgentStatus::Connected));
+        self.notify(AgentNotification::Connected { session_id: session_id.0.to_string() });
 
         Ok(())
     }
@@ -211,7 +211,7 @@ impl AgentConnection {
         *self.connection.write() = None;
         self.session_id.set(None);
         self.status.set(AgentStatus::Disconnected);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Disconnected));
+        self.notify(AgentNotification::Disconnected);
     }
 
     /// Send a prompt to the agent
@@ -224,10 +224,10 @@ impl AgentConnection {
         let session_id_str = self.session_id.get().context("No active session")?;
 
         self.status.set(AgentStatus::Processing);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Processing));
+        self.notify(AgentNotification::StatusChanged(AgentStatus::Processing));
 
         // Send user message event
-        self.send_event(AcpEvent::MessageReceived(AgentMessage {
+        self.notify(AgentNotification::Message(AgentMessage {
             role: MessageRole::User,
             content: MessageContent::Text(prompt.clone()),
             timestamp: std::time::Instant::now(),
@@ -242,7 +242,7 @@ impl AgentConnection {
 
         // Create prompt request using builder pattern
         let prompt_request = acp::PromptRequest::new(
-            acp::SessionId::new(session_id_str),
+            acp::SessionId::new(session_id_str.as_str()),
             vec![prompt.into()],
         );
 
@@ -253,7 +253,7 @@ impl AgentConnection {
             .context("Failed to send prompt")?;
 
         self.status.set(AgentStatus::Connected);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Connected));
+        self.notify(AgentNotification::StatusChanged(AgentStatus::Connected));
 
         tracing::debug!("Prompt completed with stop reason: {:?}", response.stop_reason);
 
@@ -268,7 +268,7 @@ impl AgentConnection {
 
         // Create cancel notification
         let cancel_notification = CancelNotification::new(
-            acp::SessionId::new(session_id_str)
+            acp::SessionId::new(session_id_str.as_str())
         );
 
         handle
@@ -278,13 +278,13 @@ impl AgentConnection {
             .context("Failed to cancel")?;
 
         self.status.set(AgentStatus::Connected);
-        self.send_event(AcpEvent::StatusChanged(AgentStatus::Connected));
+        self.notify(AgentNotification::StatusChanged(AgentStatus::Connected));
 
         Ok(())
     }
 
-    fn send_event(&self, event: AcpEvent) {
-        let _ = self.event_tx.send(event);
+    fn notify(&self, notification: AgentNotification) {
+        let _ = self.event_tx.send(notification);
     }
 }
 

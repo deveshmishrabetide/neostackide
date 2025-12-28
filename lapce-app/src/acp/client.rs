@@ -154,18 +154,19 @@ impl Client for LapceAcpClient {
                     .map(|s| matches!(s, ToolCallStatus::Completed))
                     .unwrap_or(true);
 
-                // Get output if available
-                let output = update.fields.output
+                // Get output from content if available (ToolCallContent is different from ContentBlock)
+                let output = update.fields.content
+                    .as_ref()
                     .map(|blocks| {
                         blocks.iter()
-                            .map(|b| content_block_to_text(b))
+                            .map(|b| format!("{:?}", b))  // Just debug print for now
                             .collect::<Vec<_>>()
                             .join("\n")
                     });
 
                 self.notify(AgentNotification::ToolCompleted {
                     tool_id: update.tool_call_id.0.to_string(),
-                    name: update.tool_call_id.0.to_string(), // TODO: Get actual name
+                    name: update.fields.title.clone().unwrap_or_else(|| update.tool_call_id.0.to_string()),
                     success,
                     output,
                 });

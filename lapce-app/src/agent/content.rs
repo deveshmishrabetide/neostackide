@@ -287,22 +287,14 @@ pub fn agent_content(
                     if messages.is_empty() {
                         agent.update_chat_title(&chat_id, &prompt);
                     }
-                    // Add user message
-                    agent.add_message(&chat_id, crate::acp::AgentMessage {
-                        role: crate::acp::MessageRole::User,
-                        content: crate::acp::MessageContent::Text(prompt.clone()),
-                        timestamp: std::time::Instant::now(),
-                    });
-                    // TODO: Actually send via ACP connection
-                    // This will be wired up in the next step
-                    tracing::info!("Would send prompt: {}", prompt);
                 }
+                // Send via ACP connection
+                agent.send_prompt(prompt);
             },
             // on_stop
             move || {
                 let agent = agent_for_stop.clone();
-                // TODO: Cancel via ACP connection
-                tracing::info!("Would cancel prompt");
+                agent.cancel();
             },
         ),
     ))

@@ -557,6 +557,9 @@ impl WindowTabData {
         let about_data = AboutData::new(cx, common.focus);
         let alert_data = AlertBoxData::new(cx, common.clone());
 
+        // Extract workspace path before struct creation (workspace is moved into struct)
+        let agent_workspace_path = workspace.path.clone().unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
         let window_tab_data = Self {
             scope: cx,
             window_tab_id: WindowTabId::next(),
@@ -598,7 +601,11 @@ impl WindowTabData {
             agent_connection: cx.create_rw_signal(None),
             agent_messages: cx.create_rw_signal(Vec::new()),
             // Agent UI state
-            agent: crate::agent::AgentData::new(cx),
+            agent: {
+                let agent = crate::agent::AgentData::new(cx, agent_workspace_path);
+                agent.setup_notification_effect();
+                agent
+            },
         };
 
         {
