@@ -133,6 +133,9 @@ pub struct AgentData {
 
     /// Error message to display
     pub error_message: RwSignal<Option<String>>,
+
+    /// Pending prompt to send when connection is established
+    pub pending_prompt: RwSignal<Option<String>>,
 }
 
 impl AgentData {
@@ -188,6 +191,7 @@ impl AgentData {
             notification,
             input_value: cx.create_rw_signal(String::new()),
             error_message: cx.create_rw_signal(None),
+            pending_prompt: cx.create_rw_signal(None),
         }
     }
 
@@ -199,6 +203,7 @@ impl AgentData {
             AgentProvider::Gemini => AgentConfig::gemini_cli(),
         };
 
+        tracing::info!("Connecting to agent: {:?} (command: {})", provider, config.command);
         self.agent_status.set(AgentStatus::Connecting);
         self.rpc.connect(config, PathBuf::from("."));
     }
@@ -206,40 +211,61 @@ impl AgentData {
     /// Send a prompt to the agent
     pub fn send_prompt(&self, prompt: String) {
         if let Some(session_id) = self.session_id.get_untracked() {
-            // Mark current chat as streaming
-            if let Some(chat_id) = self.current_chat_id.get_untracked() {
-                self.set_streaming(&chat_id, true);
-
-                // Check if this is the first message - update chat title
-                let is_first_message = self.messages.with(|msgs| {
-                    msgs.get(&chat_id).map(|m| m.is_empty()).unwrap_or(true)
-                });
-
-                if is_first_message {
-                    // Use first ~50 chars of the prompt as the chat title
-                    let title = if prompt.len() > 50 {
-                        format!("{}...", &prompt[..47])
-                    } else {
-                        prompt.clone()
-                    };
-                    self.update_chat_title(&chat_id, &title);
+            // Connected - send immediately
+            self.do_send_prompt(session_id, prompt);
+        } else {
+            // Check if we're currently connecting
+            let status = self.agent_status.get_untracked();
+            match status {
+                AgentStatus::Connecting => {
+                    // Queue the prompt to send when connection completes
+                    self.pending_prompt.set(Some(prompt));
                 }
+                AgentStatus::Disconnected | AgentStatus::Error => {
+                    // Not connected and not connecting - try to connect first
+                    self.pending_prompt.set(Some(prompt));
+                    self.ensure_connected();
+                }
+                _ => {
+                    self.set_error(Some("Not connected to agent".to_string()));
+                }
+            }
+        }
+    }
 
-                // Add user message
-                self.add_message(&chat_id, AgentMessage {
-                    role: MessageRole::User,
-                    content: MessageContent::Text(prompt.clone()),
-                    timestamp: std::time::Instant::now(),
-                });
+    /// Internal: actually send the prompt (when we have a session_id)
+    fn do_send_prompt(&self, session_id: String, prompt: String) {
+        // Mark current chat as streaming
+        if let Some(chat_id) = self.current_chat_id.get_untracked() {
+            self.set_streaming(&chat_id, true);
+
+            // Check if this is the first message - update chat title
+            let is_first_message = self.messages.with(|msgs| {
+                msgs.get(&chat_id).map(|m| m.is_empty()).unwrap_or(true)
+            });
+
+            if is_first_message {
+                // Use first ~50 chars of the prompt as the chat title
+                let title = if prompt.len() > 50 {
+                    format!("{}...", &prompt[..47])
+                } else {
+                    prompt.clone()
+                };
+                self.update_chat_title(&chat_id, &title);
             }
 
-            self.agent_status.set(AgentStatus::Processing);
-            self.rpc.prompt_async(session_id, prompt, |_result| {
-                // Response will come through notification channel
+            // Add user message
+            self.add_message(&chat_id, AgentMessage {
+                role: MessageRole::User,
+                content: MessageContent::Text(prompt.clone()),
+                timestamp: std::time::Instant::now(),
             });
-        } else {
-            self.set_error(Some("Not connected to agent".to_string()));
         }
+
+        self.agent_status.set(AgentStatus::Processing);
+        self.rpc.prompt_async(session_id, prompt, |_result| {
+            // Response will come through notification channel
+        });
     }
 
     /// Cancel the current operation
@@ -417,10 +443,19 @@ impl AgentData {
 
         match notification {
             AgentNotification::Connected { session_id } => {
-                self.session_id.set(Some(session_id));
+                tracing::info!("Agent connected with session_id: {}", session_id);
+                self.session_id.set(Some(session_id.clone()));
                 self.agent_status.set(AgentStatus::Connected);
+
+                // Send any pending prompt that was queued while connecting
+                if let Some(prompt) = self.pending_prompt.get_untracked() {
+                    tracing::info!("Sending queued prompt after connection");
+                    self.pending_prompt.set(None);
+                    self.do_send_prompt(session_id, prompt);
+                }
             }
             AgentNotification::Disconnected => {
+                tracing::info!("Agent disconnected");
                 self.session_id.set(None);
                 self.agent_status.set(AgentStatus::Disconnected);
             }
@@ -485,7 +520,8 @@ impl AgentData {
                 self.agent_status.set(AgentStatus::Connected);
             }
             AgentNotification::Error { message } => {
-                self.set_error(Some(message));
+                tracing::error!("Agent error: {}", message);
+                self.set_error(Some(message.clone()));
                 if let Some(ref chat_id) = chat_id {
                     self.chats.update(|chats| {
                         if let Some(chat) = chats.iter_mut().find(|c| &c.id == chat_id) {

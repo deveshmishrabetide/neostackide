@@ -1,3 +1,9 @@
 # Link runtime statically so Visual C++ Redist is not required
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[alias]
+dev = "run -p lapce-app"
+
+[env]
+RUST_LOG = "lapce_app=debug"
