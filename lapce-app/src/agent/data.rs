@@ -30,6 +30,7 @@ pub enum AgentProvider {
     Claude,
     Codex,
     Gemini,
+    NeoStack,
 }
 
 impl AgentProvider {
@@ -39,6 +40,7 @@ impl AgentProvider {
             AgentProvider::Claude,
             AgentProvider::Codex,
             AgentProvider::Gemini,
+            AgentProvider::NeoStack,
         ]
     }
 
@@ -47,6 +49,7 @@ impl AgentProvider {
             AgentProvider::Claude => "Claude",
             AgentProvider::Codex => "Codex",
             AgentProvider::Gemini => "Gemini",
+            AgentProvider::NeoStack => "NeoStack",
         }
     }
 }
@@ -382,6 +385,7 @@ impl AgentData {
             AgentProvider::Claude => AgentConfig::claude_code(),
             AgentProvider::Codex => AgentConfig::codex(),
             AgentProvider::Gemini => AgentConfig::gemini_cli(),
+            AgentProvider::NeoStack => AgentConfig::neostack(),
         };
 
         // Check if current chat has an agent_session_id to resume

@@ -4,6 +4,7 @@ pub mod agent;
 pub mod auth;
 pub mod bridge;
 pub mod build;
+pub mod mcp;
 
 pub mod alert;
 pub mod app;

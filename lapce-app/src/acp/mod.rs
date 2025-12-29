@@ -14,6 +14,7 @@
 
 mod client;
 mod connection;
+pub mod neostack;
 pub mod rpc;
 pub mod runtime;
 mod types;
@@ -28,6 +29,7 @@ pub use types::*;
 pub use agent_client_protocol::{
     self as acp,
     Agent,
+    AgentSideConnection,
     Client,
     ClientSideConnection,
     InitializeRequest,
@@ -78,6 +80,8 @@ pub use agent_client_protocol::{
     ResumeSessionResponse,
     SessionModelState,
     MaybeUndefined,
+    McpServer,
+    McpServerHttp,
     Error as AcpError,
     Result as AcpResult,
 };

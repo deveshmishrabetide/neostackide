@@ -58,6 +58,18 @@ impl AgentConfig {
         }
     }
 
+    /// Create a config for embedded NeoStack Agent
+    /// Uses in-memory duplex channels instead of subprocess
+    pub fn neostack() -> Self {
+        Self {
+            name: "NeoStack Agent".to_string(),
+            command: "neostack-embedded".to_string(), // Special marker for embedded agent
+            args: vec![],
+            env: vec![],
+            cwd: None,
+        }
+    }
+
     /// Create a custom agent config
     pub fn custom(name: impl Into<String>, command: impl Into<String>) -> Self {
         Self {

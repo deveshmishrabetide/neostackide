@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- NeoStack logo - stylized stack/layers -->
+  <defs>
+    <linearGradient id="neoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+  </defs>
+  <!-- Bottom layer -->
+  <path fill="url(#neoGrad)" d="M32 176 L128 224 L224 176 L224 200 L128 248 L32 200 Z"/>
+  <!-- Middle layer -->
+  <path fill="url(#neoGrad)" d="M32 128 L128 176 L224 128 L224 152 L128 200 L32 152 Z" opacity="0.85"/>
+  <!-- Top layer -->
+  <path fill="url(#neoGrad)" d="M32 80 L128 128 L224 80 L224 104 L128 152 L32 104 Z" opacity="0.7"/>
+  <!-- Top cap -->
+  <path fill="url(#neoGrad)" d="M128 8 L224 56 L128 104 L32 56 Z" opacity="0.55"/>
+</svg>

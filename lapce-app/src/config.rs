@@ -45,6 +45,7 @@ pub const LOGO: &str = include_str!("../../extra/images/logo.svg");
 const DEFAULT_SETTINGS: &str = include_str!("../../defaults/settings.toml");
 const DEFAULT_LIGHT_THEME: &str = include_str!("../../defaults/light-theme.toml");
 const DEFAULT_DARK_THEME: &str = include_str!("../../defaults/dark-theme.toml");
+const DEFAULT_NEOSTACK_DARK_THEME: &str = include_str!("../../defaults/neostack-dark-theme.toml");
 const DEFAULT_ICON_THEME: &str = include_str!("../../defaults/icon-theme.toml");
 
 static DEFAULT_CONFIG: Lazy<config::Config> = Lazy::new(LapceConfig::default_config);
@@ -319,6 +320,9 @@ impl LapceConfig {
         themes.insert(name.to_lowercase(), (name, theme));
         let (name, theme) =
             Self::load_color_theme_from_str(DEFAULT_DARK_THEME).unwrap();
+        themes.insert(name.to_lowercase(), (name, theme));
+        let (name, theme) =
+            Self::load_color_theme_from_str(DEFAULT_NEOSTACK_DARK_THEME).unwrap();
         themes.insert(name.to_lowercase(), (name, theme));
 
         themes

@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
@@ -15,18 +16,22 @@ use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::client::LapceAcpClient;
+use super::neostack::{NeoStackAgent, NeoStackAgentImpl};
 use super::rpc::{AgentRpc, AgentRpcHandler, AgentResponse};
 use super::types::*;
 use super::{
-    acp, Agent, ClientSideConnection, ProtocolVersion, Implementation,
+    acp, Agent, AgentSideConnection, ClientSideConnection, ProtocolVersion, Implementation,
     ClientCapabilities, FileSystemCapability, CancelNotification,
+    McpServer, McpServerHttp,
 };
+use crate::mcp::get_mcp_port;
 
 /// Result of a successful connection with session and model info
 struct ConnectionResult {
     conn: ClientSideConnection,
     session_id: String,
-    child: tokio::process::Child,
+    /// Child process for subprocess-based agents (None for embedded agents)
+    child: Option<tokio::process::Child>,
     /// Available models from the agent
     models: Vec<ModelInfo>,
     /// Currently selected model ID
@@ -37,8 +42,9 @@ struct ConnectionResult {
 struct ActiveConnection {
     conn: ClientSideConnection,
     session_id: String,
+    /// Child process for subprocess-based agents (None for embedded agents)
     #[allow(dead_code)]
-    child: tokio::process::Child,
+    child: Option<tokio::process::Child>,
 }
 
 /// The agent runtime that processes RPC commands
@@ -258,6 +264,11 @@ impl AgentRuntime {
         client: Arc<LapceAcpClient>,
         resume_session_id: Option<String>,
     ) -> anyhow::Result<ConnectionResult> {
+        // Check if this is the embedded NeoStack agent
+        if config.command == "neostack-embedded" {
+            return Self::do_connect_embedded(workspace_path, client, resume_session_id).await;
+        }
+
         tracing::info!("do_connect: Spawning agent process: {}, resume: {:?}", config.command, resume_session_id);
 
         // Spawn the agent process
@@ -384,7 +395,10 @@ impl AgentRuntime {
                             claude_code.insert("options".to_string(), serde_json::Value::Object(options));
                             meta.insert("claudeCode".to_string(), serde_json::Value::Object(claude_code));
 
-                            let session_request = acp::NewSessionRequest::new(workspace_path.clone()).meta(meta);
+                            let mcp_servers = Self::get_mcp_servers();
+                            let session_request = acp::NewSessionRequest::new(workspace_path.clone())
+                                .meta(meta)
+                                .mcp_servers(mcp_servers);
                             let session_response = conn.new_session(session_request).await?;
                             let new_session_id = session_response.session_id.0.to_string();
                             tracing::info!("do_connect: Session resumed via _meta fallback, new id: {}", new_session_id);
@@ -400,7 +414,12 @@ impl AgentRuntime {
         } else {
             // Create a new session
             tracing::info!("do_connect: Creating new session...");
-            let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+
+            // Add MCP server if available
+            let mcp_servers = Self::get_mcp_servers();
+            let session_request = acp::NewSessionRequest::new(workspace_path.clone())
+                .mcp_servers(mcp_servers);
+
             let session_response = conn.new_session(session_request).await?;
             let session_id = session_response.session_id.0.to_string();
             tracing::info!("do_connect: Session created with id: {}", session_id);
@@ -414,7 +433,135 @@ impl AgentRuntime {
         Ok(ConnectionResult {
             conn,
             session_id,
-            child,
+            child: Some(child),
+            models,
+            current_model_id,
+        })
+    }
+
+    /// Connect to the embedded NeoStack agent using in-memory duplex channels
+    async fn do_connect_embedded(
+        workspace_path: PathBuf,
+        client: Arc<LapceAcpClient>,
+        resume_session_id: Option<String>,
+    ) -> anyhow::Result<ConnectionResult> {
+        tracing::info!("do_connect_embedded: Creating embedded NeoStack agent, resume: {:?}", resume_session_id);
+
+        // Create duplex channels for bidirectional communication
+        // Client writes to client_write, agent reads from agent_read
+        // Agent writes to agent_write, client reads from client_read
+        let (client_read, agent_write) = tokio::io::duplex(8192);
+        let (agent_read, client_write) = tokio::io::duplex(8192);
+
+        // Create the embedded NeoStack agent
+        let neostack_agent = Rc::new(NeoStackAgent::new(workspace_path.clone()));
+        let agent_impl = NeoStackAgentImpl::new(neostack_agent.clone());
+
+        // Create the agent-side ACP connection
+        let (agent_conn, agent_io) = AgentSideConnection::new(
+            agent_impl,
+            agent_write.compat_write(),
+            agent_read.compat(),
+            |fut| {
+                tokio::task::spawn_local(fut);
+            },
+        );
+
+        // Store the connection in the agent for sending notifications
+        neostack_agent.set_connection(agent_conn);
+
+        // Spawn the agent I/O handler
+        tokio::task::spawn_local(async move {
+            if let Err(e) = agent_io.await {
+                tracing::error!("NeoStack agent I/O error: {}", e);
+            }
+        });
+
+        tracing::info!("do_connect_embedded: Creating client-side ACP connection...");
+
+        // Create the client-side ACP connection
+        let client_ref = (*client).clone();
+        let (conn, io_task) = ClientSideConnection::new(
+            client_ref,
+            client_write.compat_write(),
+            client_read.compat(),
+            |fut| {
+                tokio::task::spawn_local(fut);
+            },
+        );
+
+        // Spawn the client I/O handler
+        tokio::task::spawn_local(async move {
+            if let Err(e) = io_task.await {
+                tracing::error!("ACP client I/O error: {}", e);
+            }
+        });
+
+        tracing::info!("do_connect_embedded: Sending initialize request...");
+
+        // Initialize the connection (same as subprocess path)
+        let init_request = acp::InitializeRequest::new(ProtocolVersion::V1)
+            .client_capabilities(
+                ClientCapabilities::new()
+                    .fs(
+                        FileSystemCapability::new()
+                            .read_text_file(true)
+                            .write_text_file(true)
+                    )
+                    .terminal(true)
+            )
+            .client_info(
+                Implementation::new("lapce", env!("CARGO_PKG_VERSION"))
+                    .title("Lapce Editor".to_string())
+            );
+
+        let _init_response = conn.initialize(init_request).await?;
+        tracing::info!("do_connect_embedded: Initialize response received");
+
+        // Create or resume session
+        let (session_id, models, current_model_id) = if let Some(ref session_id_to_resume) = resume_session_id {
+            tracing::info!("do_connect_embedded: Resuming session: {}", session_id_to_resume);
+
+            let resume_request = acp::ResumeSessionRequest::new(
+                acp::SessionId::new(session_id_to_resume.as_str()),
+                workspace_path.clone(),
+            );
+
+            match conn.resume_session(resume_request).await {
+                Ok(response) => {
+                    let (models, current_model_id) = Self::extract_models_from_response(
+                        response.models.as_ref()
+                    );
+                    (session_id_to_resume.clone(), models, current_model_id)
+                }
+                Err(e) => {
+                    tracing::warn!("do_connect_embedded: resume failed: {}, creating new session", e);
+                    let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+                    let session_response = conn.new_session(session_request).await?;
+                    let session_id = session_response.session_id.0.to_string();
+                    let (models, current_model_id) = Self::extract_models_from_response(
+                        session_response.models.as_ref()
+                    );
+                    (session_id, models, current_model_id)
+                }
+            }
+        } else {
+            tracing::info!("do_connect_embedded: Creating new session...");
+            let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+            let session_response = conn.new_session(session_request).await?;
+            let session_id = session_response.session_id.0.to_string();
+            tracing::info!("do_connect_embedded: Session created with id: {}", session_id);
+
+            let (models, current_model_id) = Self::extract_models_from_response(
+                session_response.models.as_ref()
+            );
+            (session_id, models, current_model_id)
+        };
+
+        Ok(ConnectionResult {
+            conn,
+            session_id,
+            child: None, // No child process for embedded agent
             models,
             current_model_id,
         })
@@ -436,6 +583,20 @@ impl AgentRuntime {
             (models, current_id)
         } else {
             (vec![], None)
+        }
+    }
+
+    /// Get MCP servers to pass to the agent session
+    fn get_mcp_servers() -> Vec<McpServer> {
+        let mcp_port = get_mcp_port();
+        if mcp_port > 0 {
+            tracing::info!("Adding NeoStack MCP server on port {}", mcp_port);
+            vec![McpServer::Http(McpServerHttp::new(
+                "neostack",
+                format!("http://127.0.0.1:{}/mcp", mcp_port),
+            ))]
+        } else {
+            vec![]
         }
     }
 

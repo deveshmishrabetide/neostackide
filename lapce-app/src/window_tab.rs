@@ -54,6 +54,7 @@ use crate::bridge::{
     BridgeRpcHandler, BridgeStatus, BridgeNotification, PluginStatus, UEClient,
     start_bridge_runtime, is_unreal_project, check_plugin_version, install_plugin,
 };
+use crate::mcp::{start_mcp_server, McpNotification};
 use crate::build::{
     BuildConfig, BuildState, BuildTarget,
     find_build_targets_fast, find_engine_path, get_build_script, get_current_platform, get_editor_executable,
@@ -229,6 +230,8 @@ pub struct WindowTabData {
     pub bridge_rpc: BridgeRpcHandler,
     pub plugin_status: RwSignal<PluginStatus>,
     pub show_plugin_banner: RwSignal<bool>,
+    // MCP Server state
+    pub mcp_port: RwSignal<Option<u16>>,
 }
 
 impl std::fmt::Debug for WindowTabData {
@@ -601,6 +604,7 @@ impl WindowTabData {
         let bridge_port = cx.create_rw_signal(None);
         let plugin_status = cx.create_rw_signal(PluginStatus::Unknown);
         let show_plugin_banner = cx.create_rw_signal(true);
+        let mcp_port: RwSignal<Option<u16>> = cx.create_rw_signal(None);
 
         // Start bridge runtime in background thread
         let (bridge_notification_tx, bridge_notification_rx) = crossbeam_channel::unbounded();
@@ -610,6 +614,7 @@ impl WindowTabData {
         // crossbeam notifications to a std mpsc channel for floem compatibility
         {
             let (mpsc_tx, mpsc_rx) = std::sync::mpsc::channel();
+            let bridge_rpc_for_effect = bridge_rpc.clone();
 
             // Spawn thread to bridge crossbeam -> std mpsc
             std::thread::Builder::new()
@@ -638,16 +643,19 @@ impl WindowTabData {
                         BridgeNotification::ServerStopped => {
                             bridge_port.set(None);
                             bridge_status.set(BridgeStatus::Stopped);
+                            bridge_rpc_for_effect.set_connected_count(0);
                         }
                         BridgeNotification::ClientConnected(client) => {
                             tracing::info!("UE client connected: {} ({})", client.project_name, client.session_id);
                             bridge_clients.update(|clients| clients.push(client));
                             bridge_status.set(BridgeStatus::Connected);
+                            bridge_rpc_for_effect.client_connected();
                         }
                         BridgeNotification::ClientDisconnected { session_id } => {
                             bridge_clients.update(|clients| {
                                 clients.retain(|c| c.session_id != session_id);
                             });
+                            bridge_rpc_for_effect.client_disconnected();
                             if bridge_clients.get_untracked().is_empty() {
                                 bridge_status.set(BridgeStatus::Listening);
                             }
@@ -668,6 +676,67 @@ impl WindowTabData {
         if is_unreal_project(&agent_workspace_path) {
             tracing::info!("Detected Unreal project at {:?}, starting bridge", agent_workspace_path);
             bridge_rpc.start();
+
+            // Start MCP server for Claude Code integration
+            let mcp_bridge = bridge_rpc.clone();
+            let (mcp_notif_tx, mcp_notif_rx) = crossbeam_channel::unbounded();
+            std::thread::Builder::new()
+                .name("MCPServer".to_string())
+                .spawn(move || {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("Failed to create MCP tokio runtime");
+                    rt.block_on(async {
+                        match start_mcp_server(mcp_bridge, mcp_notif_tx).await {
+                            Ok(port) => {
+                                tracing::info!("MCP server started on port {}", port);
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to start MCP server: {}", e);
+                            }
+                        }
+                        // Keep the runtime alive
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        }
+                    });
+                })
+                .expect("Failed to spawn MCP server thread");
+
+            // Handle MCP notifications
+            {
+                let (mpsc_tx, mpsc_rx) = std::sync::mpsc::channel();
+                std::thread::Builder::new()
+                    .name("MCPNotificationBridge".to_string())
+                    .spawn(move || {
+                        while let Ok(notification) = mcp_notif_rx.recv() {
+                            if mpsc_tx.send(notification).is_err() {
+                                break;
+                            }
+                        }
+                    })
+                    .expect("Failed to spawn MCP notification handler");
+
+                let mcp_notification_signal = create_signal_from_channel(mpsc_rx);
+                cx.create_effect(move |_| {
+                    if let Some(notification) = mcp_notification_signal.get() {
+                        match notification {
+                            McpNotification::ServerStarted { port } => {
+                                mcp_port.set(Some(port));
+                                tracing::info!("MCP server listening on port {}", port);
+                            }
+                            McpNotification::ServerStopped => {
+                                mcp_port.set(None);
+                                tracing::info!("MCP server stopped");
+                            }
+                            McpNotification::ToolCalled { tool } => {
+                                tracing::debug!("MCP tool called: {}", tool);
+                            }
+                        }
+                    }
+                });
+            }
 
             // Check plugin status
             match check_plugin_version(&agent_workspace_path) {
@@ -749,6 +818,7 @@ impl WindowTabData {
             bridge_rpc,
             plugin_status,
             show_plugin_banner,
+            mcp_port,
         };
 
         {

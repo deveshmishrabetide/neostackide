@@ -89,6 +89,8 @@ pub struct BridgeRpcHandler {
     id: Arc<AtomicU64>,
     /// Pending request handlers
     pending: Arc<Mutex<HashMap<RequestId, ResponseHandler>>>,
+    /// Connected client count (updated via notifications)
+    connected_count: Arc<AtomicU64>,
 }
 
 impl BridgeRpcHandler {
@@ -100,6 +102,70 @@ impl BridgeRpcHandler {
             rx,
             id: Arc::new(AtomicU64::new(0)),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            connected_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Check if any UE clients are connected
+    pub fn is_connected(&self) -> bool {
+        self.connected_count.load(Ordering::Relaxed) > 0
+    }
+
+    /// Update connected client count (called from notification handler)
+    pub fn set_connected_count(&self, count: u64) {
+        self.connected_count.store(count, Ordering::Relaxed);
+    }
+
+    /// Increment connected count (called when client connects)
+    pub fn client_connected(&self) {
+        self.connected_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement connected count (called when client disconnects)
+    pub fn client_disconnected(&self) {
+        let prev = self.connected_count.fetch_sub(1, Ordering::Relaxed);
+        if prev == 0 {
+            // Underflow protection
+            self.connected_count.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Send a command and wait for response (async)
+    pub async fn send_command(
+        &self,
+        session_id: Option<&str>,
+        cmd: &str,
+        args: Option<serde_json::Value>,
+    ) -> Result<BridgeEvent, String> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let id = self.id.fetch_add(1, Ordering::Relaxed);
+        self.pending.lock().insert(id, ResponseHandler::Chan(tx));
+
+        // Send the command
+        if let Some(sid) = session_id {
+            let _ = self.tx.send(BridgeRpc::SendCommand {
+                id,
+                session_id: sid.to_string(),
+                cmd: cmd.to_string(),
+                args,
+            });
+        } else {
+            let _ = self.tx.send(BridgeRpc::SendCommandToAny {
+                id,
+                cmd: cmd.to_string(),
+                args,
+            });
+        }
+
+        // Wait for response with timeout
+        match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            Ok(result) => match result {
+                Ok(BridgeResponse::CommandCompleted(event)) => Ok(event),
+                Ok(BridgeResponse::Error { message }) => Err(message),
+                Ok(BridgeResponse::Started { .. }) => Err("Unexpected response type".to_string()),
+                Err(e) => Err(e),
+            },
+            Err(_) => Err("Command timed out".to_string()),
         }
     }
 
@@ -200,6 +266,9 @@ impl Default for BridgeRpcHandler {
         Self::new()
     }
 }
+
+// Re-export BridgeEvent for MCP
+pub use super::types::BridgeEvent;
 
 /// State of a connected client
 struct ClientState {

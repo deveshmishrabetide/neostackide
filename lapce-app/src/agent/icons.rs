@@ -11,11 +11,15 @@ pub const OPENAI_ICON: &str = include_str!("icons/openai_dark.svg");
 /// Google Gemini icon SVG
 pub const GEMINI_ICON: &str = include_str!("icons/gemini.svg");
 
+/// NeoStack icon SVG
+pub const NEOSTACK_ICON: &str = include_str!("icons/neostack.svg");
+
 /// Get the SVG icon string for a provider
 pub fn provider_icon(provider: AgentProvider) -> &'static str {
     match provider {
         AgentProvider::Claude => CLAUDE_ICON,
         AgentProvider::Codex => OPENAI_ICON,
         AgentProvider::Gemini => GEMINI_ICON,
+        AgentProvider::NeoStack => NEOSTACK_ICON,
     }
 }
