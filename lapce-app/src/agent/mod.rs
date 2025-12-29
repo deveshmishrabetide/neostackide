@@ -11,6 +11,7 @@ pub mod icons;
 pub mod input;
 pub mod messages;
 pub mod sidebar;
+pub mod todo_panel;
 pub mod view;
 
 pub use data::{AgentData, AgentProvider, Chat, ChatStatus};

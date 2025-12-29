@@ -10,3 +10,7 @@ vendor/
 
 .DS_Store
 *.patch
+
+# Temp folders
+.temp/
+.neostack/

@@ -15,6 +15,7 @@ use floem::{
 use super::data::{AgentData, AgentProvider};
 use super::icons::provider_icon;
 use super::input::{agent_input, error_banner};
+use super::todo_panel::{todo_panel, has_todos};
 use super::messages::message_list;
 use crate::app::clickable_icon;
 use crate::config::{LapceConfig, color::LapceColor, icon::LapceIcons};
@@ -249,8 +250,10 @@ pub fn agent_content(
     let agent = window_tab_data.agent.clone();
     let agent_for_messages = agent.clone();
     let agent_for_streaming = agent.clone();
+    let agent_for_thinking = agent.clone();
     let agent_for_is_streaming = agent.clone();
     let agent_for_error = agent.clone();
+    let agent_for_todo = agent.clone();
     let agent_for_input = agent.clone();
     let agent_for_send = agent.clone();
     let agent_for_stop = agent.clone();
@@ -262,6 +265,7 @@ pub fn agent_content(
         message_list(
             move || agent_for_messages.current_messages(),
             move || agent_for_streaming.current_streaming_text(),
+            move || agent_for_thinking.current_streaming_thinking(),
             move || agent_for_is_streaming.is_current_streaming(),
             agent.clone(),
             config,
@@ -275,10 +279,16 @@ pub fn agent_content(
             },
             config,
         ),
-        // Input area
+        // Todo panel (above input, connected visually)
+        container(
+            todo_panel(agent_for_todo, config)
+        )
+        .style(|s| s.width_full().padding_horiz(16.0)),
+        // Input area (connected to todo panel above when present)
         agent_input(
-            agent_for_input,
+            agent_for_input.clone(),
             config,
+            has_todos(&agent_for_input),
             // on_send
             move |prompt: String| {
                 let agent = agent_for_send.clone();

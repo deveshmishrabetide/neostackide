@@ -186,24 +186,45 @@ impl Client for LapceAcpClient {
             }
 
             SessionUpdate::Plan(plan) => {
-                // Agent shared its plan - display as thinking message
-                let plan_text = plan
+                // Convert ACP plan entries to our PlanEntry type
+                let entries: Vec<PlanEntry> = plan
                     .entries
                     .iter()
-                    .map(|e| format!("- {}", e.content))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                    .map(|e| PlanEntry {
+                        content: e.content.clone(),
+                        status: match e.status {
+                            agent_client_protocol::PlanEntryStatus::Pending => PlanEntryStatus::Pending,
+                            agent_client_protocol::PlanEntryStatus::InProgress => PlanEntryStatus::InProgress,
+                            agent_client_protocol::PlanEntryStatus::Completed => PlanEntryStatus::Completed,
+                            _ => PlanEntryStatus::Pending, // Handle any future variants
+                        },
+                    })
+                    .collect();
 
-                self.notify(AgentNotification::Message(AgentMessage {
-                    id: 0, // Will be assigned by AgentData
-                    role: MessageRole::Agent,
-                    parts: vec![MessagePart::Reasoning(format!("Plan:\n{}", plan_text))],
-                    timestamp: std::time::Instant::now(),
-                }));
+                self.notify(AgentNotification::PlanUpdated { entries });
+            }
+
+            SessionUpdate::AgentThoughtChunk(chunk) => {
+                // Agent's internal reasoning - display in muted style
+                let text = content_block_to_text(&chunk.content);
+                self.notify(AgentNotification::ThinkingChunk { text });
+            }
+
+            SessionUpdate::SessionInfoUpdate(info) => {
+                // Session metadata updated (title, etc.)
+                use super::MaybeUndefined;
+                let title = match info.title {
+                    MaybeUndefined::Value(t) => Some(t),
+                    MaybeUndefined::Null => Some(String::new()), // Cleared
+                    MaybeUndefined::Undefined => None, // No change
+                };
+                if title.is_some() {
+                    self.notify(AgentNotification::SessionInfoUpdated { title });
+                }
             }
 
             _ => {
-                // Handle any other updates gracefully
+                // Handle any other updates gracefully (AvailableCommandsUpdate, CurrentModeUpdate, etc.)
             }
         }
 

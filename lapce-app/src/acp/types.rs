@@ -213,6 +213,52 @@ pub struct ModelInfo {
     pub description: Option<String>,
 }
 
+/// Status of a plan/todo entry
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanEntryStatus {
+    /// Task not started yet
+    Pending,
+    /// Task currently being worked on
+    InProgress,
+    /// Task completed
+    Completed,
+}
+
+/// A single entry in the agent's execution plan (todo item)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanEntry {
+    /// Human-readable description of the task
+    pub content: String,
+    /// Current status of the task
+    pub status: PlanEntryStatus,
+}
+
+/// Statistics about the current plan
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlanStats {
+    pub total: usize,
+    pub completed: usize,
+    pub in_progress: usize,
+    pub pending: usize,
+    /// Progress percentage (0-100)
+    pub progress: f32,
+}
+
+impl PlanStats {
+    pub fn from_entries(entries: &[PlanEntry]) -> Self {
+        let total = entries.len();
+        let completed = entries.iter().filter(|e| e.status == PlanEntryStatus::Completed).count();
+        let in_progress = entries.iter().filter(|e| e.status == PlanEntryStatus::InProgress).count();
+        let pending = entries.iter().filter(|e| e.status == PlanEntryStatus::Pending).count();
+        let progress = if total > 0 {
+            (completed as f32 / total as f32) * 100.0
+        } else {
+            0.0
+        };
+        Self { total, completed, in_progress, pending, progress }
+    }
+}
+
 /// Events emitted by the ACP client for UI updates (legacy)
 #[derive(Debug, Clone)]
 pub enum AcpEvent {
@@ -252,8 +298,20 @@ pub enum AgentNotification {
         /// Currently selected model ID
         current_model_id: Option<String>,
     },
+    /// Plan/todo list updated
+    PlanUpdated {
+        /// The todo entries
+        entries: Vec<PlanEntry>,
+    },
+    /// Session info updated (title, etc.)
+    SessionInfoUpdated {
+        /// New title (if changed)
+        title: Option<String>,
+    },
     /// Text chunk received (for streaming display)
     TextChunk { text: String },
+    /// Thinking/reasoning chunk received (muted display)
+    ThinkingChunk { text: String },
     /// Complete message received (add to history)
     Message(AgentMessage),
     /// Tool call started

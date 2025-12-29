@@ -36,6 +36,7 @@ pub use agent_client_protocol::{
     CancelNotification,
     SessionNotification,
     SessionUpdate,
+    SessionInfoUpdate,
     ContentBlock,
     ContentChunk,
     TextContent,
@@ -76,6 +77,7 @@ pub use agent_client_protocol::{
     ResumeSessionRequest,
     ResumeSessionResponse,
     SessionModelState,
+    MaybeUndefined,
     Error as AcpError,
     Result as AcpResult,
 };

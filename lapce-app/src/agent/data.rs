@@ -124,6 +124,9 @@ pub struct AgentData {
     /// Current streaming text buffer per chat
     pub streaming_text: RwSignal<HashMap<String, String>>,
 
+    /// Current streaming thinking/reasoning buffer per chat
+    pub streaming_thinking: RwSignal<HashMap<String, String>>,
+
     /// Whether currently streaming per chat
     pub is_streaming: RwSignal<HashMap<String, bool>>,
 
@@ -141,6 +144,12 @@ pub struct AgentData {
 
     /// Currently selected model ID
     pub current_model_id: RwSignal<Option<String>>,
+
+    /// Current plan/todo entries from the agent
+    pub plan_entries: RwSignal<Vec<crate::acp::PlanEntry>>,
+
+    /// Whether the todo panel is expanded
+    pub todo_panel_expanded: RwSignal<bool>,
 
     /// RPC handler for communicating with agent runtime
     pub rpc: Arc<AgentRpcHandler>,
@@ -304,12 +313,15 @@ impl AgentData {
             provider: cx.create_rw_signal(AgentProvider::default()),
             messages: cx.create_rw_signal(messages),
             streaming_text: cx.create_rw_signal(HashMap::new()),
+            streaming_thinking: cx.create_rw_signal(HashMap::new()),
             is_streaming: cx.create_rw_signal(HashMap::new()),
             pending_permissions: cx.create_rw_signal(HashMap::new()),
             agent_status: cx.create_rw_signal(AgentStatus::Disconnected),
             session_id: cx.create_rw_signal(None),
             available_models: cx.create_rw_signal(vec![]),
             current_model_id: cx.create_rw_signal(None),
+            plan_entries: cx.create_rw_signal(vec![]),
+            todo_panel_expanded: cx.create_rw_signal(false),
             rpc,
             notification,
             input_editor,
@@ -638,6 +650,66 @@ impl AgentData {
         });
     }
 
+    /// Get streaming thinking text for current chat
+    pub fn current_streaming_thinking(&self) -> String {
+        let current_id = self.current_chat_id.get();
+        current_id
+            .and_then(|id| {
+                self.streaming_thinking.with(|s| s.get(&id).cloned())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Append text to streaming thinking buffer
+    pub fn append_streaming_thinking(&self, chat_id: &str, text: &str) {
+        self.streaming_thinking.update(|s| {
+            let entry = s.entry(chat_id.to_string()).or_insert_with(String::new);
+            entry.push_str(text);
+        });
+    }
+
+    /// Flush streaming thinking to the current agent message as a Reasoning part
+    pub fn flush_streaming_thinking(&self, chat_id: &str) {
+        let text = self.streaming_thinking.with_untracked(|s| s.get(chat_id).cloned());
+        if let Some(text) = text {
+            if !text.is_empty() {
+                tracing::info!("flush_streaming_thinking: appending {} chars as Reasoning", text.len());
+                self.append_reasoning_part_to_current_message(chat_id, &text);
+            }
+        }
+        self.streaming_thinking.update(|s| {
+            s.remove(chat_id);
+        });
+    }
+
+    /// Append a Reasoning part to the current agent message, or create a new message
+    fn append_reasoning_part_to_current_message(&self, chat_id: &str, text: &str) {
+        self.messages.update(|msgs| {
+            let chat_messages = msgs.entry(chat_id.to_string()).or_insert_with(Vector::new);
+
+            // Check if the last message is from the agent and we can append to it
+            let should_append = chat_messages.last()
+                .map(|m| m.role == MessageRole::Agent)
+                .unwrap_or(false);
+
+            if should_append {
+                // Append Reasoning part to existing agent message
+                if let Some(last_msg) = chat_messages.back_mut() {
+                    last_msg.parts.push(MessagePart::Reasoning(text.to_string()));
+                }
+            } else {
+                // Create a new agent message with the Reasoning part
+                let new_message = AgentMessage {
+                    id: self.next_message_id(),
+                    role: MessageRole::Agent,
+                    parts: vec![MessagePart::Reasoning(text.to_string())],
+                    timestamp: std::time::Instant::now(),
+                };
+                chat_messages.push_back(new_message);
+            }
+        });
+    }
+
     /// Append a text part to the current agent message, or create a new message
     fn append_text_part_to_current_message(&self, chat_id: &str, text: &str) {
         self.messages.update(|msgs| {
@@ -860,6 +932,38 @@ impl AgentData {
                 self.available_models.set(models);
                 self.current_model_id.set(current_model_id);
             }
+            AgentNotification::PlanUpdated { entries } => {
+                tracing::info!("Plan updated: {} entries", entries.len());
+                self.plan_entries.set(entries);
+                // Auto-expand panel when plan is received
+                if !self.plan_entries.with_untracked(|p| p.is_empty()) {
+                    self.todo_panel_expanded.set(true);
+                }
+            }
+            AgentNotification::SessionInfoUpdated { title } => {
+                tracing::info!("Session info updated: title={:?}", title);
+                // Update the current chat's title if provided
+                if let Some(new_title) = title {
+                    if let Some(ref chat_id) = chat_id {
+                        if !new_title.is_empty() {
+                            self.chats.update(|chats| {
+                                if let Some(chat) = chats.iter_mut().find(|c| &c.id == chat_id) {
+                                    chat.title = new_title.clone();
+                                }
+                            });
+                            // Persist the updated title
+                            self.save_persisted();
+                        }
+                    }
+                }
+            }
+            AgentNotification::ThinkingChunk { text } => {
+                tracing::debug!("ThinkingChunk: {} chars", text.len());
+                if let Some(ref chat_id) = chat_id {
+                    // Append to thinking buffer
+                    self.append_streaming_thinking(chat_id, &text);
+                }
+            }
             AgentNotification::TextChunk { text } => {
                 tracing::debug!("TextChunk: {} chars", text.len());
                 if let Some(ref chat_id) = chat_id {
@@ -880,6 +984,8 @@ impl AgentData {
             AgentNotification::ToolStarted { tool_id, name, input } => {
                 tracing::info!("ToolStarted: {} ({})", name, tool_id);
                 if let Some(ref chat_id) = chat_id {
+                    // Flush any streaming thinking before the tool call
+                    self.flush_streaming_thinking(chat_id);
                     // Flush any streaming text before the tool call (interleaved content)
                     self.flush_streaming_text(chat_id);
                     // Add the tool call as a part of the current agent message
@@ -902,6 +1008,8 @@ impl AgentData {
             AgentNotification::TurnCompleted { stop_reason } => {
                 tracing::info!("TurnCompleted: stop_reason={:?}", stop_reason);
                 if let Some(ref chat_id) = chat_id {
+                    // Flush any remaining thinking
+                    self.flush_streaming_thinking(chat_id);
                     // Flush the streaming buffer to create a complete message
                     self.flush_streaming_text(chat_id);
                     // End streaming state

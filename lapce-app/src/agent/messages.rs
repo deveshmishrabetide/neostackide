@@ -7,15 +7,39 @@ use std::sync::Arc;
 
 use floem::{
     IntoView, View,
-    reactive::{ReadSignal, SignalGet, SignalWith, create_memo},
+    action::exec_after,
+    reactive::{ReadSignal, SignalGet, SignalUpdate, SignalWith, create_memo, create_rw_signal},
     style::{AlignItems, CursorStyle, Display},
-    views::{Decorators, container, dyn_stack, empty, h_stack, scroll, text, v_stack},
+    views::{Decorators, container, dyn_stack, empty, h_stack, scroll, svg, text, v_stack},
 };
+use std::time::Duration;
 use im::Vector;
 
 use crate::acp::{AgentMessage, MessagePart, MessageRole, ToolCallState};
-use crate::config::{LapceConfig, color::LapceColor};
+use crate::config::{LapceConfig, color::LapceColor, icon::LapceIcons};
 use crate::agent::data::AgentData;
+
+// ============================================================================
+// Copy Helper
+// ============================================================================
+
+/// Extract all text content from message parts for copying
+fn extract_text_for_copy(parts: &[MessagePart]) -> String {
+    parts.iter().filter_map(|p| {
+        match p {
+            MessagePart::Text(t) => Some(t.clone()),
+            MessagePart::Reasoning(r) => Some(format!("[Thinking]\n{}", r)),
+            MessagePart::Error(e) => Some(format!("[Error] {}", e)),
+            MessagePart::ToolCall { name, output, .. } => {
+                if let Some(out) = output {
+                    Some(format!("[{}]\n{}", name, out))
+                } else {
+                    None
+                }
+            }
+        }
+    }).collect::<Vec<_>>().join("\n\n")
+}
 
 // ============================================================================
 // Tool Call Helpers
@@ -483,11 +507,11 @@ fn message_view(
     message: AgentMessage,
     agent: AgentData,
     config: ReadSignal<Arc<LapceConfig>>,
-    is_last: bool,
-    is_streaming: impl Fn() -> bool + 'static,
+    hide_border: bool,
 ) -> impl View {
     let role = message.role;
     let parts = message.parts;
+    let parts_for_copy = parts.clone();
 
     let (role_label, role_color) = match role {
         MessageRole::User => ("You", LapceColor::LAPCE_ICON_ACTIVE),
@@ -495,21 +519,68 @@ fn message_view(
         MessageRole::System => ("System", LapceColor::LAPCE_WARN),
     };
 
-    // Hide border on last agent message when streaming (streaming text continues it)
-    let hide_border = is_last && role == MessageRole::Agent;
+    // Hover and copy feedback state
+    let is_hovered = create_rw_signal(false);
+    let copy_feedback = create_rw_signal(false);
 
-    v_stack((
-        // Role header
-        text(role_label).style(move |s| {
-            let config = config.get();
-            s.font_size(11.0)
-                .font_weight(floem::text::Weight::SEMIBOLD)
-                .color(config.color(role_color))
-                .padding_bottom(4.0)
-        }),
-        // Message parts
-        message_parts_view(parts, agent, config),
-    ))
+    container(
+        v_stack((
+            // Header row with role and copy button
+            h_stack((
+                // Role label
+                text(role_label).style(move |s| {
+                    let config = config.get();
+                    s.font_size(11.0)
+                        .font_weight(floem::text::Weight::SEMIBOLD)
+                        .color(config.color(role_color))
+                }),
+                // Spacer
+                empty().style(|s| s.flex_grow(1.0)),
+                // Copy button - shows on hover (uses LINK icon as copy)
+                container(
+                    svg(move || config.get().ui_svg(LapceIcons::LINK))
+                    .style(move |s| {
+                        let config = config.get();
+                        let visible = is_hovered.get() || copy_feedback.get();
+                        let color = if copy_feedback.get() {
+                            floem::peniko::Color::from_rgb8(34, 197, 94) // Green for success
+                        } else if visible {
+                            config.color(LapceColor::EDITOR_FOREGROUND).with_alpha(0.6)
+                        } else {
+                            floem::peniko::Color::TRANSPARENT // Hidden but takes space
+                        };
+                        s.width(14.0).height(14.0).color(color)
+                    })
+                )
+                .style(move |s| {
+                    let config = config.get();
+                    let visible = is_hovered.get() || copy_feedback.get();
+                    s.padding(4.0)
+                        .border_radius(4.0)
+                        .cursor(if visible { CursorStyle::Pointer } else { CursorStyle::Default })
+                        .apply_if(visible, |s| s.hover(|s| s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))))
+                })
+                .on_click_stop(move |_| {
+                    let text_to_copy = extract_text_for_copy(&parts_for_copy);
+                    floem::Clipboard::set_contents(text_to_copy);
+                    copy_feedback.set(true);
+                    exec_after(Duration::from_secs(2), move |_| {
+                        copy_feedback.set(false);
+                    });
+                }),
+            ))
+            .style(|s| s.width_full().align_items(AlignItems::Center).padding_bottom(4.0)),
+            // Message parts
+            message_parts_view(parts, agent, config),
+        ))
+        .style(|s| s.width_full()),
+    )
+    .on_event_stop(floem::event::EventListener::PointerEnter, move |_| {
+        is_hovered.set(true);
+    })
+    .on_event_stop(floem::event::EventListener::PointerLeave, move |_| {
+        is_hovered.set(false);
+    })
     .style(move |s| {
         let config = config.get();
         let bg = match role {
@@ -520,8 +591,7 @@ fn message_view(
         let s = s.width_full()
             .padding(12.0)
             .background(bg);
-        // Don't show border on last agent message when streaming
-        if hide_border && is_streaming() {
+        if hide_border {
             s
         } else {
             s.border_bottom(1.0)
@@ -534,34 +604,111 @@ fn message_view(
 // Streaming View
 // ============================================================================
 
-/// Streaming text indicator - shown as continuation of agent message (no header)
+/// Streaming text indicator
+/// `show_header` - if true, shows "Agent" header (for new responses); if false, continues previous message
 fn streaming_view(
     streaming_text: impl Fn() -> String + 'static,
+    show_header: impl Fn() -> bool + 'static + Clone,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    // Streaming content with cursor - no "Agent" header since it continues the agent message
-    h_stack((
-        floem::views::label(streaming_text).style(move |s| {
-            let config = config.get();
-            s.font_size(13.0)
-                .color(config.color(LapceColor::EDITOR_FOREGROUND))
-                .line_height(1.5)
+    let show_header2 = show_header.clone();
+
+    v_stack((
+        // Agent header - only shown when starting fresh (no previous agent message)
+        container(
+            text("Agent").style(move |s| {
+                let config = config.get();
+                s.font_size(11.0)
+                    .font_weight(floem::text::Weight::SEMIBOLD)
+                    .color(config.color(LapceColor::EDITOR_FOCUS))
+                    .padding_bottom(4.0)
+            })
+        ).style(move |s| {
+            if show_header() {
+                s
+            } else {
+                s.display(Display::None)
+            }
         }),
-        // Blinking cursor
-        empty().style(move |s| {
-            let config = config.get();
-            s.width(2.0)
-                .height(16.0)
-                .background(config.color(LapceColor::EDITOR_CARET))
-                .margin_left(2.0)
-        }),
+        // Streaming content with cursor
+        h_stack((
+            floem::views::label(streaming_text).style(move |s| {
+                let config = config.get();
+                s.font_size(13.0)
+                    .color(config.color(LapceColor::EDITOR_FOREGROUND))
+                    .line_height(1.5)
+            }),
+            // Blinking cursor
+            empty().style(move |s| {
+                let config = config.get();
+                s.width(2.0)
+                    .height(16.0)
+                    .background(config.color(LapceColor::EDITOR_CARET))
+                    .margin_left(2.0)
+            }),
+        )),
     ))
     .style(move |s| {
         let config = config.get();
+        let has_header = show_header2();
+        // When continuing an existing agent message, use minimal padding to blend in
+        if has_header {
+            s.width_full()
+                .padding(12.0)
+                .background(config.color(LapceColor::EDITOR_BACKGROUND))
+        } else {
+            // No header means continuing - just add left padding to align with message content
+            s.width_full()
+                .padding_left(12.0)
+                .padding_right(12.0)
+                .padding_bottom(4.0)
+                .background(config.color(LapceColor::EDITOR_BACKGROUND))
+        }
+    })
+}
+
+/// Streaming thinking/reasoning indicator (muted style)
+fn streaming_thinking_view(
+    streaming_thinking: impl Fn() -> String + 'static,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    container(
+        h_stack((
+            // Thinking label
+            text("Thinking...").style(move |s| {
+                let config = config.get();
+                s.font_size(11.0)
+                    .font_weight(floem::text::Weight::MEDIUM)
+                    .font_style(floem::text::Style::Italic)
+                    .color(config.color(LapceColor::PANEL_FOREGROUND).with_alpha(0.5))
+            }),
+            // Thinking content (truncated)
+            floem::views::label(move || {
+                let text = streaming_thinking();
+                // Show last ~100 chars
+                if text.len() > 100 {
+                    format!("...{}", &text[text.len()-100..])
+                } else {
+                    text
+                }
+            }).style(move |s| {
+                let config = config.get();
+                s.font_size(11.0)
+                    .font_style(floem::text::Style::Italic)
+                    .color(config.color(LapceColor::PANEL_FOREGROUND).with_alpha(0.4))
+                    .text_ellipsis()
+                    .max_width_full()
+            }),
+        ))
+    ).style(move |s| {
+        let config = config.get();
         s.width_full()
-            .padding_horiz(12.0)
-            .padding_vert(4.0)
-            .background(config.color(LapceColor::EDITOR_BACKGROUND))
+            .padding(8.0)
+            .margin_left(12.0)
+            .margin_right(12.0)
+            .border_left(2.0)
+            .border_color(config.color(LapceColor::LAPCE_WARN).with_alpha(0.3))
+            .background(config.color(LapceColor::LAPCE_WARN).with_alpha(0.03))
     })
 }
 
@@ -600,17 +747,36 @@ fn empty_state(config: ReadSignal<Arc<LapceConfig>>) -> impl View {
 
 /// The message list component
 pub fn message_list(
-    messages: impl Fn() -> Vector<AgentMessage> + 'static,
+    messages: impl Fn() -> Vector<AgentMessage> + 'static + Clone,
     streaming_text: impl Fn() -> String + 'static + Clone,
+    streaming_thinking: impl Fn() -> String + 'static + Clone,
     is_streaming: impl Fn() -> bool + 'static + Clone,
     agent: AgentData,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    let messages_fn = messages;
-    let streaming_text_fn = streaming_text;
-    let is_streaming_fn = is_streaming;
-    let is_streaming_for_msgs = is_streaming_fn.clone();
-    let is_streaming_for_view = is_streaming_fn.clone();
+    let messages_fn = messages.clone();
+    let messages_for_header = messages;
+    let streaming_text_fn = streaming_text.clone();
+    let streaming_text_fn2 = streaming_text.clone();
+    let streaming_text_fn3 = streaming_text;
+    let streaming_thinking_fn = streaming_thinking.clone();
+    let streaming_thinking_fn2 = streaming_thinking;
+    let is_streaming_fn = is_streaming.clone();
+    let is_streaming_fn2 = is_streaming.clone();
+    let is_streaming_fn3 = is_streaming;
+
+    // Track if last message is from agent (for streaming header visibility)
+    let last_is_agent = create_memo(move |_| {
+        messages_for_header()
+            .last()
+            .map(|m| m.role == MessageRole::Agent)
+            .unwrap_or(false)
+    });
+
+    // Track if streaming is active with content (for hiding last agent message border)
+    let is_streaming_with_content = create_memo(move |_| {
+        is_streaming_fn() && !streaming_text_fn3().is_empty()
+    });
 
     container(
         scroll(
@@ -620,7 +786,6 @@ pub fn message_list(
                     move || {
                         let msgs = messages_fn();
                         let len = msgs.len();
-                        // Include index for detecting last message
                         msgs.iter().cloned().enumerate().map(|(i, m)| (i, len, m)).collect::<Vec<_>>()
                     },
                     |(_, _, msg)| {
@@ -628,7 +793,7 @@ pub fn message_list(
                         // This ensures view recreation when tool state or output changes
                         let parts_summary: String = msg.parts.iter().map(|p| {
                             match p {
-                                MessagePart::Text(t) => format!("T{}", t.len() % 100), // Include length hint
+                                MessagePart::Text(t) => format!("T{}", t.len() % 100),
                                 MessagePart::ToolCall { state, output, .. } => {
                                     let state_char = match state {
                                         ToolCallState::Running => "r",
@@ -642,45 +807,55 @@ pub fn message_list(
                                 MessagePart::Error(_) => "E".to_string(),
                             }
                         }).collect::<Vec<_>>().join("-");
-                        let key = format!("msg{}:{}", msg.id, parts_summary);
-                        tracing::debug!("dyn_stack key: {}", key);
-                        key
+                        format!("msg{}:{}", msg.id, parts_summary)
                     },
-                    {
-                        let is_streaming_fn = is_streaming_for_msgs.clone();
-                        move |(idx, len, msg)| {
-                            let is_last = idx == len - 1;
-                            let is_streaming_fn = is_streaming_fn.clone();
-                            message_view(msg, agent.clone(), config, is_last, move || is_streaming_fn())
-                        }
+                    move |(idx, len, msg)| {
+                        // Hide border on last agent message when streaming continues it
+                        let is_last = idx == len - 1;
+                        let is_agent = msg.role == MessageRole::Agent;
+                        let hide_border = is_last && is_agent && is_streaming_with_content.get();
+                        message_view(msg, agent.clone(), config, hide_border)
                     },
                 )
                 .style(|s| s.flex_col().width_full()),
-                // Streaming text - continues the last agent message visually
-                {
-                    let streaming_text_fn = streaming_text_fn.clone();
-                    let streaming_text_fn2 = streaming_text_fn.clone();
-                    let is_streaming_fn = is_streaming_for_view;
-                    container(
-                        streaming_view(move || streaming_text_fn(), config)
-                    ).style(move |s| {
-                        if is_streaming_fn() && !streaming_text_fn2().is_empty() {
-                            s
-                        } else {
-                            s.display(Display::None)
-                        }
-                    })
-                },
+                // Streaming thinking view (muted style, shown when thinking)
+                container(
+                    streaming_thinking_view(
+                        move || streaming_thinking_fn(),
+                        config,
+                    )
+                ).style(move |s| {
+                    if is_streaming_fn2() && !streaming_thinking_fn2().is_empty() {
+                        s
+                    } else {
+                        s.display(Display::None)
+                    }
+                }),
+                // Streaming view - continues last agent message or shows header if new
+                container(
+                    streaming_view(
+                        move || streaming_text_fn(),
+                        // Show header only if last message is NOT an agent message
+                        move || !last_is_agent.get(),
+                        config,
+                    )
+                ).style(move |s| {
+                    if is_streaming_fn3() && !streaming_text_fn2().is_empty() {
+                        s
+                    } else {
+                        s.display(Display::None)
+                    }
+                }),
             ))
             .style(|s| s.flex_col().width_full()),
         )
-        .style(|s| s.flex_grow(1.0).width_full()),
+        .style(|s| s.flex_grow(1.0).width_full().min_height(0.0)),  // min_height(0) allows shrinking for scroll
     )
     .style(move |s| {
         let config = config.get();
         s.flex_grow(1.0)
             .width_full()
-            .flex_col()
+            .min_height(0.0)  // Critical: allows flex item to shrink below content size
             .background(config.color(LapceColor::EDITOR_BACKGROUND))
     })
     .debug_name("Message List")
