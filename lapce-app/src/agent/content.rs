@@ -14,7 +14,7 @@ use floem::{
 
 use super::data::{AgentData, AgentProvider};
 use super::icons::provider_icon;
-use super::input::{agent_input, error_banner};
+use super::input::{agent_input, error_banner, permission_banner};
 use super::todo_panel::{todo_panel, has_todos};
 use super::messages::message_list;
 use crate::app::clickable_icon;
@@ -253,6 +253,7 @@ pub fn agent_content(
     let agent_for_thinking = agent.clone();
     let agent_for_is_streaming = agent.clone();
     let agent_for_error = agent.clone();
+    let agent_for_permission = agent.clone();
     let agent_for_todo = agent.clone();
     let agent_for_input = agent.clone();
     let agent_for_send = agent.clone();
@@ -270,6 +271,8 @@ pub fn agent_content(
             agent.clone(),
             config,
         ),
+        // Permission banner (shown when agent needs approval)
+        permission_banner(agent_for_permission, config),
         // Error banner
         error_banner(
             move || agent_for_error.error_message.get(),

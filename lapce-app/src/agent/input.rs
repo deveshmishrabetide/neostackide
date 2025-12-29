@@ -417,3 +417,127 @@ pub fn error_banner(
     })
     .debug_name("Error Banner")
 }
+
+/// Permission request banner shown when agent needs approval
+pub fn permission_banner(
+    agent: AgentData,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View {
+    let agent_for_permissions = agent.clone();
+    let agent_for_approve = agent.clone();
+    let agent_for_deny = agent.clone();
+
+    container(
+        v_stack((
+            // Header
+            h_stack((
+                // Warning icon
+                svg(move || config.get().ui_svg(LapceIcons::WARNING))
+                    .style(move |s| {
+                        let config = config.get();
+                        s.width(16.0)
+                            .height(16.0)
+                            .color(config.color(LapceColor::LAPCE_WARN))
+                    }),
+                // Title
+                label(|| "Permission Required")
+                    .style(move |s| {
+                        let config = config.get();
+                        s.font_size(13.0)
+                            .font_weight(floem::text::Weight::SEMIBOLD)
+                            .color(config.color(LapceColor::EDITOR_FOREGROUND))
+                    }),
+            ))
+            .style(|s| s.align_items(AlignItems::Center).gap(8.0)),
+            // Description - show first permission request
+            {
+                let agent = agent.clone();
+                label(move || {
+                    agent.current_pending_permissions()
+                        .front()
+                        .map(|p| p.description.clone())
+                        .unwrap_or_else(|| "Tool requires permission".to_string())
+                })
+                .style(move |s| {
+                    let config = config.get();
+                    s.font_size(12.0)
+                        .color(config.color(LapceColor::EDITOR_FOREGROUND).with_alpha(0.8))
+                        .margin_top(4.0)
+                })
+            },
+            // Action buttons
+            h_stack((
+                // Approve button
+                container(
+                    label(|| "Allow")
+                        .style(move |s| {
+                            let config = config.get();
+                            s.font_size(12.0)
+                                .color(config.color(LapceColor::EDITOR_BACKGROUND))
+                        }),
+                )
+                .style(move |s| {
+                    let config = config.get();
+                    s.padding_horiz(16.0)
+                        .padding_vert(6.0)
+                        .background(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_BACKGROUND))
+                        .border_radius(4.0)
+                        .cursor(CursorStyle::Pointer)
+                        .hover(|s| s.background(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_BACKGROUND).with_alpha(0.8)))
+                })
+                .on_click_stop(move |_| {
+                    // Approve the first pending permission
+                    if let Some(request) = agent_for_approve.current_pending_permissions().front() {
+                        let option_id = request.options.first().map(|o| o.id.clone());
+                        agent_for_approve.approve_permission(&request.id, option_id);
+                    }
+                }),
+                // Deny button
+                container(
+                    label(|| "Deny")
+                        .style(move |s| {
+                            let config = config.get();
+                            s.font_size(12.0)
+                                .color(config.color(LapceColor::EDITOR_FOREGROUND))
+                        }),
+                )
+                .style(move |s| {
+                    let config = config.get();
+                    s.padding_horiz(16.0)
+                        .padding_vert(6.0)
+                        .border(1.0)
+                        .border_color(config.color(LapceColor::LAPCE_BORDER))
+                        .border_radius(4.0)
+                        .cursor(CursorStyle::Pointer)
+                        .hover(|s| s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND)))
+                })
+                .on_click_stop(move |_| {
+                    // Deny the first pending permission
+                    if let Some(request) = agent_for_deny.current_pending_permissions().front() {
+                        agent_for_deny.deny_permission(&request.id);
+                    }
+                }),
+            ))
+            .style(|s| s.gap(8.0).margin_top(8.0)),
+        ))
+        .style(|s| s.width_full()),
+    )
+    .style(move |s| {
+        let config = config.get();
+        let has_permissions = !agent_for_permissions.current_pending_permissions().is_empty();
+        let s = s
+            .padding(12.0)
+            .margin_horiz(16.0)
+            .background(config.color(LapceColor::LAPCE_WARN).with_alpha(0.1))
+            .border(1.0)
+            .border_color(config.color(LapceColor::LAPCE_WARN).with_alpha(0.3))
+            .border_radius(8.0)
+            .margin_bottom(8.0);
+        if has_permissions {
+            s
+        } else {
+            s.display(Display::None)
+        }
+    })
+    .debug_name("Permission Banner")
+}

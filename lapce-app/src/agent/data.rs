@@ -16,7 +16,7 @@ use std::collections::HashSet;
 
 use crate::acp::{
     AgentConfig, AgentMessage, AgentNotification, AgentRpcHandler, AgentStatus,
-    MessagePart, MessageRole, PermissionRequest, ToolCallState,
+    MessagePart, MessageRole, PermissionRequest, PermissionResponse, ToolCallState,
     start_agent_runtime,
 };
 use crate::editor::EditorData;
@@ -883,6 +883,42 @@ impl AgentData {
                 perms.retain(|r| r.id != request_id);
             }
         });
+    }
+
+    /// Approve a permission request
+    pub fn approve_permission(&self, request_id: &str, selected_option: Option<String>) {
+        tracing::info!("Approving permission: {} with option {:?}", request_id, selected_option);
+        // Send response to agent via RPC
+        self.rpc.respond_permission(
+            request_id.to_string(),
+            PermissionResponse {
+                approved: true,
+                cancelled: false,
+                selected_option,
+            },
+        );
+        // Remove from pending
+        if let Some(chat_id) = self.current_chat_id.get() {
+            self.remove_permission_request(&chat_id, request_id);
+        }
+    }
+
+    /// Deny/cancel a permission request
+    pub fn deny_permission(&self, request_id: &str) {
+        tracing::info!("Denying permission: {}", request_id);
+        // Send response to agent via RPC
+        self.rpc.respond_permission(
+            request_id.to_string(),
+            PermissionResponse {
+                approved: false,
+                cancelled: true,
+                selected_option: None,
+            },
+        );
+        // Remove from pending
+        if let Some(chat_id) = self.current_chat_id.get() {
+            self.remove_permission_request(&chat_id, request_id);
+        }
     }
 
     /// Set error message
