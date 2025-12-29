@@ -5,6 +5,8 @@
 //! of subprocess stdio.
 
 mod agent;
+pub mod provider;
+pub mod streaming;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,15 +16,17 @@ use std::rc::Rc;
 use agent_client_protocol::AgentSideConnection;
 
 pub use agent::NeoStackAgentImpl;
+use provider::{ChatMessage, NeostackProvider};
 
 /// Session state for a NeoStack agent conversation
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Session {
     pub id: String,
     pub cwd: PathBuf,
     pub model_id: String,
     pub mode_id: String,
     pub cancelled: bool,
+    pub messages: Vec<ChatMessage>,
 }
 
 impl Session {
@@ -33,6 +37,7 @@ impl Session {
             model_id: "anthropic/claude-sonnet-4".to_string(),
             mode_id: "default".to_string(),
             cancelled: false,
+            messages: Vec::new(),
         }
     }
 
@@ -53,6 +58,7 @@ pub struct NeoStackAgent {
     workspace_path: PathBuf,
     sessions: RefCell<HashMap<String, Session>>,
     connection: RefCell<Option<Rc<AgentSideConnection>>>,
+    provider: NeostackProvider,
 }
 
 impl NeoStackAgent {
@@ -62,7 +68,18 @@ impl NeoStackAgent {
             workspace_path,
             sessions: RefCell::new(HashMap::new()),
             connection: RefCell::new(None),
+            provider: NeostackProvider::new(),
         }
+    }
+
+    /// Get the provider for AI inference
+    pub fn provider(&self) -> &NeostackProvider {
+        &self.provider
+    }
+
+    /// Get the ACP connection for sending notifications
+    pub fn connection(&self) -> Option<Rc<AgentSideConnection>> {
+        self.connection.borrow().clone()
     }
 
     /// Set the ACP connection for sending notifications back to client
@@ -77,13 +94,23 @@ impl NeoStackAgent {
 
     /// Get a session by ID
     pub fn get_session(&self, session_id: &str) -> Option<Session> {
-        self.sessions.borrow().get(session_id).map(|s| Session {
-            id: s.id.clone(),
-            cwd: s.cwd.clone(),
-            model_id: s.model_id.clone(),
-            mode_id: s.mode_id.clone(),
-            cancelled: s.cancelled,
-        })
+        self.sessions.borrow().get(session_id).cloned()
+    }
+
+    /// Add a message to a session's history
+    pub fn add_message(&self, session_id: &str, message: ChatMessage) {
+        if let Some(session) = self.sessions.borrow_mut().get_mut(session_id) {
+            session.messages.push(message);
+        }
+    }
+
+    /// Get messages for a session
+    pub fn get_messages(&self, session_id: &str) -> Vec<ChatMessage> {
+        self.sessions
+            .borrow()
+            .get(session_id)
+            .map(|s| s.messages.clone())
+            .unwrap_or_default()
     }
 
     /// Insert a new session

@@ -6,17 +6,19 @@ use std::rc::Rc;
 
 use agent_client_protocol::{
     Agent, AgentCapabilities, AuthenticateRequest, AuthenticateResponse, CancelNotification,
-    Error, ExtNotification, ExtRequest, ExtResponse, Implementation, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, ModelId, ModelInfo,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion,
-    ResumeSessionRequest, ResumeSessionResponse, Result, SessionId,
-    SessionMode, SessionModeId, SessionModeState, SessionModelState,
-    SetSessionModeRequest, SetSessionModeResponse,
-    SetSessionModelRequest, SetSessionModelResponse, StopReason,
+    Client, ContentBlock, ContentChunk, Error, ExtNotification, ExtRequest, ExtResponse,
+    Implementation, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, ModelId, ModelInfo, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, ProtocolVersion, ResumeSessionRequest, ResumeSessionResponse, Result,
+    SessionId, SessionMode, SessionModeId, SessionModeState, SessionModelState,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse,
+    SetSessionModelRequest, SetSessionModelResponse, StopReason, TextContent,
 };
 use serde_json::value::RawValue;
 use uuid::Uuid;
 
+use super::provider::{ChatMessage, StreamEvent};
+use super::streaming::SseStream;
 use super::{NeoStackAgent, Session};
 
 /// Wrapper to implement Agent trait
@@ -30,6 +32,18 @@ impl NeoStackAgentImpl {
     pub fn new(agent: Rc<NeoStackAgent>) -> Self {
         Self { agent }
     }
+
+    /// Extract text content from prompt blocks
+    fn extract_text(&self, prompt: &[ContentBlock]) -> String {
+        prompt
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[async_trait::async_trait(?Send)]
@@ -41,7 +55,7 @@ impl Agent for NeoStackAgentImpl {
             .agent_capabilities(AgentCapabilities::default())
             .agent_info(
                 Implementation::new("neostack", env!("CARGO_PKG_VERSION"))
-                    .title("NeoStack Agent".to_string())
+                    .title("NeoStack Agent".to_string()),
             ))
     }
 
@@ -115,13 +129,109 @@ impl Agent for NeoStackAgentImpl {
         let session_id = args.session_id.0.to_string();
         tracing::info!("NeoStack agent: prompt for session {}", session_id);
 
-        // Check if session exists
-        if self.agent.get_session(&session_id).is_none() {
+        // Check if session exists and get model
+        let session = match self.agent.get_session(&session_id) {
+            Some(s) => s,
+            None => return Err(Error::invalid_params()),
+        };
+
+        // Extract text from prompt
+        let user_text = self.extract_text(&args.prompt);
+        if user_text.is_empty() {
             return Err(Error::invalid_params());
         }
 
-        // TODO: Implement actual AI provider integration
-        // For now, just return a stub response
+        tracing::info!("NeoStack agent: user message: {}", user_text);
+
+        // Add user message to history
+        self.agent.add_message(
+            &session_id,
+            ChatMessage {
+                role: "user".to_string(),
+                content: user_text.clone(),
+            },
+        );
+
+        // Get all messages for context
+        let messages = self.agent.get_messages(&session_id);
+
+        // Get connection for sending notifications
+        let conn = match self.agent.connection() {
+            Some(c) => c,
+            None => {
+                tracing::error!("NeoStack agent: no connection available");
+                return Err(Error::internal_error());
+            }
+        };
+
+        // Call the AI provider
+        let response = match self.agent.provider().chat_stream(
+            &session.model_id,
+            messages,
+            Some(system_prompt()),
+        ).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("NeoStack agent: provider error: {}", e);
+
+                // Send error as message chunk
+                let _ = conn.session_notification(SessionNotification::new(
+                    SessionId::new(session_id.clone()),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                        ContentBlock::Text(TextContent::new(format!("Error: {}", e))),
+                    )),
+                )).await;
+
+                return Ok(PromptResponse::new(StopReason::EndTurn));
+            }
+        };
+
+        // Stream the response
+        let mut stream = SseStream::new(response);
+        let mut full_response = String::new();
+
+        while let Some(event) = stream.next().await {
+            match event {
+                StreamEvent::TextDelta(text) => {
+                    full_response.push_str(&text);
+
+                    // Send chunk to client
+                    let _ = conn.session_notification(SessionNotification::new(
+                        SessionId::new(session_id.clone()),
+                        SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                            ContentBlock::Text(TextContent::new(text)),
+                        )),
+                    )).await;
+                }
+                StreamEvent::Done => {
+                    tracing::info!("NeoStack agent: stream done");
+                    break;
+                }
+                StreamEvent::Error(e) => {
+                    tracing::error!("NeoStack agent: stream error: {}", e);
+                    break;
+                }
+            }
+
+            // Check for cancellation
+            if let Some(s) = self.agent.get_session(&session_id) {
+                if s.is_cancelled() {
+                    tracing::info!("NeoStack agent: cancelled");
+                    return Ok(PromptResponse::new(StopReason::Cancelled));
+                }
+            }
+        }
+
+        // Add assistant response to history
+        if !full_response.is_empty() {
+            self.agent.add_message(
+                &session_id,
+                ChatMessage {
+                    role: "assistant".to_string(),
+                    content: full_response,
+                },
+            );
+        }
 
         Ok(PromptResponse::new(StopReason::EndTurn))
     }
@@ -134,20 +244,34 @@ impl Agent for NeoStackAgentImpl {
         Ok(())
     }
 
-    async fn set_session_mode(&self, args: SetSessionModeRequest) -> Result<SetSessionModeResponse> {
+    async fn set_session_mode(
+        &self,
+        args: SetSessionModeRequest,
+    ) -> Result<SetSessionModeResponse> {
         let session_id = args.session_id.0.to_string();
         let mode_id = args.mode_id.0.to_string();
-        tracing::info!("NeoStack agent: set_session_mode {} -> {}", session_id, mode_id);
+        tracing::info!(
+            "NeoStack agent: set_session_mode {} -> {}",
+            session_id,
+            mode_id
+        );
 
         self.agent.set_session_mode(&session_id, &mode_id);
 
         Ok(SetSessionModeResponse::default())
     }
 
-    async fn set_session_model(&self, args: SetSessionModelRequest) -> Result<SetSessionModelResponse> {
+    async fn set_session_model(
+        &self,
+        args: SetSessionModelRequest,
+    ) -> Result<SetSessionModelResponse> {
         let session_id = args.session_id.0.to_string();
         let model_id = args.model_id.0.to_string();
-        tracing::info!("NeoStack agent: set_session_model {} -> {}", session_id, model_id);
+        tracing::info!(
+            "NeoStack agent: set_session_model {} -> {}",
+            session_id,
+            model_id
+        );
 
         self.agent.set_session_model(&session_id, &model_id);
 
@@ -163,25 +287,28 @@ impl Agent for NeoStackAgentImpl {
     }
 }
 
+/// System prompt for the NeoStack agent
+fn system_prompt() -> String {
+    "You are NeoStack Agent, an AI coding assistant embedded in Lapce. \
+    You help developers with coding tasks, answer questions about code, \
+    and assist with software development. Be concise and helpful."
+        .to_string()
+}
+
 /// Available AI models
 fn available_models() -> Vec<ModelInfo> {
     vec![
-        ModelInfo::new(
-            ModelId::new("anthropic/claude-sonnet-4"),
-            "Claude Sonnet 4",
-        ).description("Fast and intelligent".to_string()),
-        ModelInfo::new(
-            ModelId::new("anthropic/claude-opus-4"),
-            "Claude Opus 4",
-        ).description("Most capable".to_string()),
+        ModelInfo::new(ModelId::new("anthropic/claude-sonnet-4"), "Claude Sonnet 4")
+            .description("Fast and intelligent".to_string()),
+        ModelInfo::new(ModelId::new("anthropic/claude-opus-4"), "Claude Opus 4")
+            .description("Most capable".to_string()),
         ModelInfo::new(
             ModelId::new("anthropic/claude-haiku-3.5"),
             "Claude Haiku 3.5",
-        ).description("Fast and efficient".to_string()),
-        ModelInfo::new(
-            ModelId::new("openai/gpt-4o"),
-            "GPT-4o",
-        ).description("OpenAI's flagship model".to_string()),
+        )
+        .description("Fast and efficient".to_string()),
+        ModelInfo::new(ModelId::new("openai/gpt-4o"), "GPT-4o")
+            .description("OpenAI's flagship model".to_string()),
     ]
 }
 
