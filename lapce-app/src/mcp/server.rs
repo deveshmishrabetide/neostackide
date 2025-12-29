@@ -249,8 +249,21 @@ async fn handle_tools_call(
 
     let args = params.arguments.unwrap_or(json!({}));
 
-    // Execute the tool
-    let result = execute_tool(bridge, &params.name, args).await;
+    // Execute the tool with timeout
+    tracing::info!("[MCP] Calling execute_tool for: {}", params.name);
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        execute_tool(bridge, &params.name, args)
+    ).await;
+
+    let result = match result {
+        Ok(r) => r,
+        Err(_) => {
+            tracing::error!("[MCP] Tool execution timed out after 60s");
+            Err("Tool execution timed out".to_string())
+        }
+    };
+    tracing::info!("[MCP] execute_tool returned: {:?}", result.is_ok());
 
     match result {
         Ok(tool_result) => {
@@ -259,6 +272,7 @@ async fn handle_tools_call(
             } else {
                 tool_result.error.unwrap_or_else(|| "Unknown error".to_string())
             };
+            tracing::info!("[MCP] Tool result - success: {}, content: {}", tool_result.success, &content[..content.len().min(100)]);
 
             let call_result = ToolCallResult {
                 content: vec![ToolContent {
@@ -271,6 +285,7 @@ async fn handle_tools_call(
             JsonRpcResponse::success(id, serde_json::to_value(call_result).unwrap())
         }
         Err(e) => {
+            tracing::error!("[MCP] Tool execution error: {}", e);
             let call_result = ToolCallResult {
                 content: vec![ToolContent {
                     content_type: "text".to_string(),

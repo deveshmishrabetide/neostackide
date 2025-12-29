@@ -5,6 +5,7 @@
 //! of subprocess stdio.
 
 mod agent;
+pub mod mcp_client;
 pub mod provider;
 pub mod streaming;
 
@@ -13,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use agent_client_protocol::AgentSideConnection;
+use agent_client_protocol::{AgentSideConnection, McpServer};
 
 pub use agent::NeoStackAgentImpl;
 use provider::{ChatMessage, NeostackProvider};
@@ -27,10 +28,11 @@ pub struct Session {
     pub mode_id: String,
     pub cancelled: bool,
     pub messages: Vec<ChatMessage>,
+    pub mcp_servers: Vec<McpServer>,
 }
 
 impl Session {
-    pub fn new(id: &str, cwd: PathBuf) -> Self {
+    pub fn new(id: &str, cwd: PathBuf, mcp_servers: Vec<McpServer>) -> Self {
         Self {
             id: id.to_string(),
             cwd,
@@ -38,6 +40,7 @@ impl Session {
             mode_id: "default".to_string(),
             cancelled: false,
             messages: Vec::new(),
+            mcp_servers,
         }
     }
 

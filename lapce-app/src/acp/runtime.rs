@@ -536,7 +536,9 @@ impl AgentRuntime {
                 }
                 Err(e) => {
                     tracing::warn!("do_connect_embedded: resume failed: {}, creating new session", e);
-                    let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+                    let mcp_servers = Self::get_mcp_servers();
+                    let session_request = acp::NewSessionRequest::new(workspace_path.clone())
+                        .mcp_servers(mcp_servers);
                     let session_response = conn.new_session(session_request).await?;
                     let session_id = session_response.session_id.0.to_string();
                     let (models, current_model_id) = Self::extract_models_from_response(
@@ -547,7 +549,9 @@ impl AgentRuntime {
             }
         } else {
             tracing::info!("do_connect_embedded: Creating new session...");
-            let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+            let mcp_servers = Self::get_mcp_servers();
+            let session_request = acp::NewSessionRequest::new(workspace_path.clone())
+                .mcp_servers(mcp_servers);
             let session_response = conn.new_session(session_request).await?;
             let session_id = session_response.session_id.0.to_string();
             tracing::info!("do_connect_embedded: Session created with id: {}", session_id);

@@ -30,7 +30,11 @@ async fn execute_bridge_tool(
     args: Value,
 ) -> Result<ToolResult, String> {
     // Check if UE5 is connected
-    if !bridge.is_connected() {
+    let is_connected = bridge.is_connected();
+    tracing::info!("[MCP] execute_bridge_tool: {} - UE connected: {}", tool_name, is_connected);
+
+    if !is_connected {
+        tracing::info!("[MCP] Returning error: UE5 not connected");
         return Ok(ToolResult::error(
             "UE5 is not connected. Please connect Unreal Editor first."
         ));
