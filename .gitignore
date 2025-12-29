@@ -10,6 +10,7 @@ vendor/
 
 .DS_Store
 *.patch
+*.pdb
 
 # Temp folders
 .temp/
