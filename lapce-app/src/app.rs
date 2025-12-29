@@ -68,6 +68,7 @@ use tracing_subscriber::{filter::Targets, reload::Handle};
 
 use crate::{
     about, alert,
+    auth::{AuthData, AuthService, AuthState, auth_view, loading_view},
     code_action::CodeActionStatus,
     command::{
         CommandKind, InternalCommand, LapceCommand, LapceWorkbenchCommand,
@@ -106,6 +107,7 @@ use crate::{
     title::{ViewMode, title, window_controls_view},
     tracing::*,
     update::ReleaseInfo,
+    welcome::welcome_view,
     window::{TabsInfo, WindowData, WindowInfo},
     window_tab::{Focus, WindowTabData},
     workspace::{LapceWorkspace, LapceWorkspaceType},
@@ -170,6 +172,10 @@ pub struct AppData {
     pub config: RwSignal<Arc<LapceConfig>>,
     /// Paths to extra plugins to load
     pub plugin_paths: Arc<Vec<PathBuf>>,
+    /// Authentication data
+    pub auth_data: AuthData,
+    /// Authentication service
+    pub auth_service: Rc<AuthService>,
 }
 
 impl AppData {
@@ -498,9 +504,18 @@ impl AppData {
         let window_scale = window_data.window_scale;
         let app_command = window_data.app_command;
         let config = window_data.config;
+
+        // Auth state for conditional rendering
+        let auth_data = self.auth_data.clone();
+        let auth_service = self.auth_service.clone();
+        let auth_state = auth_data.state;
+        let auth_config = self.config;
+
         // The KeyDown and PointerDown event handlers both need ownership of a WindowData object.
         let key_down_window_data = window_data.clone();
-        let view = stack((
+
+        // Main app content (shown when authenticated)
+        let main_view = stack((
             workspace_tab_header(window_data.clone()),
             window(window_data.clone()),
             stack((
@@ -603,7 +618,34 @@ impl AppData {
                     .pointer_events_none()
             }),
         ))
-        .style(|s| s.flex_col().size_full());
+        .style(move |s| {
+            let is_authenticated = matches!(auth_state.get(), AuthState::Authenticated { .. });
+            s.flex_col()
+                .size_full()
+                .apply_if(!is_authenticated, |s| s.display(Display::None))
+        });
+
+        // Auth conditional rendering using visibility
+        let view = stack((
+            // Loading view
+            loading_view(auth_config)
+                .style(move |s| {
+                    let is_loading = matches!(auth_state.get(), AuthState::Loading);
+                    s.size_full()
+                        .apply_if(!is_loading, |s| s.display(Display::None))
+                }),
+            // Auth view (login screen)
+            auth_view(auth_data.clone(), auth_service.clone(), auth_config)
+                .style(move |s| {
+                    let is_unauthenticated = matches!(auth_state.get(), AuthState::Unauthenticated);
+                    s.size_full()
+                        .apply_if(!is_unauthenticated, |s| s.display(Display::None))
+                }),
+            // Main app view (only visible when authenticated)
+            main_view,
+        ))
+        .style(|s| s.size_full());
+
         let view_id = view.id();
         app_view_id.set(view_id);
 
@@ -2205,34 +2247,52 @@ fn devops_view(window_tab_data: Rc<WindowTabData>) -> impl View {
 
 /// Main content area that switches based on view mode
 /// All views are kept alive, only visibility is toggled
+/// Shows welcome screen when no workspace is open
 fn main_content(window_tab_data: Rc<WindowTabData>) -> impl View {
     let view_mode = window_tab_data.view_mode;
+    let workspace = window_tab_data.workspace.clone();
+    let has_workspace = workspace.path.is_some();
+
+    // Get db from context and create welcome view if no workspace
+    let db: Arc<LapceDb> = use_context().unwrap();
+    let workbench_command = window_tab_data.common.workbench_command.clone();
+    let window_command = window_tab_data.common.window_common.window_command.clone();
+    let config = window_tab_data.common.config;
 
     stack((
-        // Agent view - hidden unless in Agent mode
+        // Welcome view - shown when no workspace is open
+        welcome_view((*db).clone(), workbench_command, window_command, config)
+            .style(move |s| {
+                s.size_full()
+                    .absolute()
+                    .inset_top(0.0)
+                    .inset_left(0.0)
+                    .apply_if(has_workspace, |s| s.hide())
+            }),
+        // Agent view - hidden unless in Agent mode AND has workspace
         agent_view(window_tab_data.clone())
             .style(move |s| {
-                let is_visible = view_mode.get() == ViewMode::Agent;
+                let is_visible = has_workspace && view_mode.get() == ViewMode::Agent;
                 s.size_full()
                     .absolute()
                     .inset_top(0.0)
                     .inset_left(0.0)
                     .apply_if(!is_visible, |s| s.hide())
             }),
-        // IDE/Workbench view - hidden unless in IDE mode
+        // IDE/Workbench view - hidden unless in IDE mode AND has workspace
         workbench(window_tab_data.clone())
             .style(move |s| {
-                let is_visible = view_mode.get() == ViewMode::Ide;
+                let is_visible = has_workspace && view_mode.get() == ViewMode::Ide;
                 s.size_full()
                     .absolute()
                     .inset_top(0.0)
                     .inset_left(0.0)
                     .apply_if(!is_visible, |s| s.hide())
             }),
-        // DevOps view - hidden unless in DevOps mode
+        // DevOps view - hidden unless in DevOps mode AND has workspace
         devops_view(window_tab_data.clone())
             .style(move |s| {
-                let is_visible = view_mode.get() == ViewMode::DevOps;
+                let is_visible = has_workspace && view_mode.get() == ViewMode::DevOps;
                 s.size_full()
                     .absolute()
                     .inset_top(0.0)
@@ -3931,6 +3991,17 @@ pub fn launch() {
     window_scale.set(config.ui.scale());
 
     let config = scope.create_rw_signal(Arc::new(config));
+
+    // Initialize authentication
+    let auth_data = AuthData::new(scope);
+    let auth_service = Rc::new(AuthService::new().expect("Failed to create auth service"));
+
+    // Initialize auth - load stored tokens
+    auth_service.initialize(&auth_data);
+
+    // Start background token refresh
+    auth_service.start_background_refresh(&auth_data);
+
     let app_data = AppData {
         windows,
         active_window: scope.create_rw_signal(WindowId::from_raw(0)),
@@ -3942,6 +4013,8 @@ pub fn launch() {
         tracing_handle: reload_handle,
         config,
         plugin_paths,
+        auth_data,
+        auth_service,
     };
 
     let app = app_data.create_windows(db.clone(), cli.paths);

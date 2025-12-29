@@ -12,32 +12,16 @@ use floem::{
 use lapce_core::meta;
 use lapce_rpc::proxy::ProxyStatus;
 
+// Re-export build types for convenience
+pub use crate::build::{BuildConfig, BuildState, BuildTarget};
+
 /// View modes for the IDE
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ViewMode {
     Agent,
+    #[default]
     Ide,
     DevOps,
-}
-
-/// Build configuration options
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildConfig {
-    Development,
-    DebugGame,
-    Test,
-    Shipping,
-}
-
-impl BuildConfig {
-    fn as_str(&self) -> &'static str {
-        match self {
-            BuildConfig::Development => "Development",
-            BuildConfig::DebugGame => "DebugGame",
-            BuildConfig::Test => "Test",
-            BuildConfig::Shipping => "Shipping",
-        }
-    }
 }
 
 use crate::{
@@ -144,6 +128,62 @@ fn dropdown_button(
     })
 }
 
+/// Toolbar button (build/run/debug) - reactive version
+fn toolbar_button_reactive<F, G, H, T>(
+    icon: F,
+    tooltip: G,
+    color: Option<fn(&LapceConfig) -> Color>,
+    disabled: H,
+    on_click: impl Fn() + 'static,
+    config: ReadSignal<Arc<LapceConfig>>,
+) -> impl View
+where
+    F: Fn() -> &'static str + 'static,
+    G: Fn() -> T + 'static + Clone,
+    H: Fn() -> bool + 'static + Clone,
+    T: std::fmt::Display + 'static,
+{
+    let disabled_for_style = disabled.clone();
+    let disabled_for_click = disabled.clone();
+    tooltip_label(
+        config,
+        container(svg(move || config.get().ui_svg(icon())).style(move |s| {
+            let config = config.get();
+            let is_disabled = disabled();
+            let icon_size = config.ui.icon_size() as f32;
+            let icon_color = if is_disabled {
+                config.color(LapceColor::LAPCE_ICON_ACTIVE).with_alpha(0.5)
+            } else if let Some(color_fn) = color {
+                color_fn(&config)
+            } else {
+                config.color(LapceColor::LAPCE_ICON_ACTIVE)
+            };
+            s.size(icon_size, icon_size).color(icon_color)
+        })),
+        tooltip,
+    )
+    .on_click_stop(move |_| {
+        if !disabled_for_click() {
+            on_click();
+        }
+    })
+    .style(move |s| {
+        let config = config.get();
+        let is_disabled = disabled_for_style();
+        s.padding(6.0)
+            .border_radius(4.0)
+            .cursor(if is_disabled { CursorStyle::Default } else { CursorStyle::Pointer })
+            .apply_if(!is_disabled, |s| {
+                s.hover(|s| {
+                    s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+                })
+                .active(|s| {
+                    s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
+                })
+            })
+    })
+}
+
 /// Toolbar button (build/run/debug)
 fn toolbar_button(
     icon: fn() -> &'static str,
@@ -185,26 +225,53 @@ fn toolbar_button(
 }
 
 /// Unreal Engine toolbar (target, config, build/run/debug)
-fn unreal_toolbar(
-    build_target: RwSignal<String>,
-    build_config: RwSignal<BuildConfig>,
-    config: ReadSignal<Arc<LapceConfig>>,
-) -> impl View {
+fn unreal_toolbar(window_tab_data: Rc<WindowTabData>) -> impl View {
+    let build_target = window_tab_data.build_target;
+    let build_config = window_tab_data.build_config;
+    let build_targets = window_tab_data.build_targets;
+    let build_state = window_tab_data.build_state;
+    let config = window_tab_data.common.config;
+
+    // Clone WindowTabData for closures
+    let wtd_build = window_tab_data.clone();
+    let wtd_run = window_tab_data.clone();
+
     stack((
-        // Target selector
+        // Target selector - populated from discovered targets
         dropdown_button(
-            move || build_target.get(),
+            move || {
+                let target = build_target.get();
+                if target.is_empty() {
+                    "Select Target".to_string()
+                } else {
+                    target
+                }
+            },
             120.0,
             config,
         )
         .popout_menu(move || {
-            Menu::new("")
-                .entry(MenuItem::new("MyGameEditor").action(move || {
-                    build_target.set("MyGameEditor".to_string());
-                }))
-                .entry(MenuItem::new("MyGame").action(move || {
-                    build_target.set("MyGame".to_string());
-                }))
+            let targets = build_targets.get();
+            let mut menu = Menu::new("");
+
+            if targets.is_empty() {
+                menu = menu.entry(MenuItem::new("No targets found").enabled(false));
+            } else {
+                for target in targets {
+                    let name = target.name.clone();
+                    let target_type = target.target_type.clone();
+                    let display = if target_type.is_empty() {
+                        name.clone()
+                    } else {
+                        format!("{} ({})", name, target_type)
+                    };
+                    let name_for_action = name.clone();
+                    menu = menu.entry(MenuItem::new(display).action(move || {
+                        build_target.set(name_for_action.clone());
+                    }));
+                }
+            }
+            menu
         }),
         // Config selector
         dropdown_button(
@@ -236,24 +303,62 @@ fn unreal_toolbar(
                 .margin_horiz(8.0)
                 .background(config.color(LapceColor::LAPCE_BORDER))
         }),
-        // Build button
-        toolbar_button(
-            || LapceIcons::DEBUG_RESTART,
-            "Build (Ctrl+B)",
+        // Build button - toggles between build and cancel based on state
+        toolbar_button_reactive(
+            move || {
+                match build_state.get() {
+                    BuildState::Building | BuildState::Cancelling => LapceIcons::DEBUG_STOP,
+                    _ => LapceIcons::DEBUG_RESTART,
+                }
+            },
+            move || {
+                match build_state.get() {
+                    BuildState::Building => "Cancel Build",
+                    BuildState::Cancelling => "Cancelling...",
+                    _ => "Build (Ctrl+B)",
+                }
+            },
             Some(|c: &LapceConfig| c.color(LapceColor::LAPCE_ICON_ACTIVE)),
-            false,
+            move || build_state.get() == BuildState::Cancelling,
+            move || {
+                let state = wtd_build.build_state.get_untracked();
+                match state {
+                    BuildState::Building => wtd_build.cancel_build(),
+                    BuildState::Idle => wtd_build.start_build(),
+                    _ => {}
+                }
+            },
             config,
         ),
-        // Run button
-        toolbar_button(
-            || LapceIcons::START,
-            "Run",
+        // Run button - toggles between run and stop based on state
+        toolbar_button_reactive(
+            move || {
+                match build_state.get() {
+                    BuildState::Running => LapceIcons::DEBUG_STOP,
+                    _ => LapceIcons::START,
+                }
+            },
+            move || {
+                match build_state.get() {
+                    BuildState::Running => "Stop",
+                    BuildState::Building => "Building...",
+                    _ => "Run",
+                }
+            },
             Some(|_c: &LapceConfig| Color::from_rgb8(34, 197, 94)), // green
-            false,
+            move || build_state.get() == BuildState::Building || build_state.get() == BuildState::Cancelling,
+            move || {
+                let state = wtd_run.build_state.get_untracked();
+                match state {
+                    BuildState::Running => wtd_run.stop_running(),
+                    BuildState::Idle => wtd_run.run_project(),
+                    _ => {}
+                }
+            },
             config,
         )
         .style(|s| s.margin_left(2.0)),
-        // Debug button
+        // Debug button (disabled for now)
         toolbar_button(
             || LapceIcons::DEBUG,
             "Debug (F5)",
@@ -672,8 +777,6 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
     let config = window_tab_data.common.config;
 
     let view_mode = window_tab_data.view_mode;
-    let build_target = window_tab_data.build_target;
-    let build_config = window_tab_data.build_config;
 
     stack((
         left(
@@ -691,7 +794,7 @@ pub fn title(window_tab_data: Rc<WindowTabData>) -> impl View {
             workbench_command,
             config,
         ),
-        unreal_toolbar(build_target, build_config, config),
+        unreal_toolbar(window_tab_data.clone()),
         right(
             window_command,
             workbench_command,

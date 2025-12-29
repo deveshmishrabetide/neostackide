@@ -37,7 +37,7 @@ use lapce_core::{
 use lapce_rpc::{
     RpcError,
     core::CoreNotification,
-    dap_types::{ConfigSource, RunDebugConfig},
+    dap_types::{ConfigSource, DapId, RunDebugConfig},
     file::{Naming, PathObject},
     plugin::PluginId,
     proxy::{ProxyResponse, ProxyRpcHandler, ProxyStatus},
@@ -50,6 +50,14 @@ use lsp_types::{
 };
 
 use crate::acp::{AgentStatus, AgentMessage, AgentConnection};
+use crate::bridge::{
+    BridgeRpcHandler, BridgeStatus, BridgeNotification, PluginStatus, UEClient,
+    start_bridge_runtime, is_unreal_project, check_plugin_version, install_plugin,
+};
+use crate::build::{
+    BuildConfig, BuildState, BuildTarget,
+    find_build_targets_fast, find_engine_path, get_build_script, get_current_platform, get_editor_executable,
+};
 use serde_json::Value;
 use tracing::{Level, debug, error, event};
 
@@ -93,7 +101,7 @@ use crate::{
         event::{TermEvent, TermNotification, terminal_update_process},
         panel::TerminalPanelData,
     },
-    title::{BuildConfig, ViewMode},
+    title::ViewMode,
     tracing::*,
     window::WindowCommonData,
     workspace::{LapceWorkspace, LapceWorkspaceType, WorkspaceInfo},
@@ -200,6 +208,13 @@ pub struct WindowTabData {
     pub view_mode: RwSignal<ViewMode>,
     pub build_target: RwSignal<String>,
     pub build_config: RwSignal<BuildConfig>,
+    pub build_targets: RwSignal<Vec<BuildTarget>>,
+    pub build_state: RwSignal<BuildState>,
+    pub build_progress: RwSignal<f32>,
+    pub build_message: RwSignal<String>,
+    pub uproject_path: RwSignal<Option<PathBuf>>,
+    pub build_term_id: RwSignal<Option<lapce_rpc::terminal::TermId>>,
+    pub editor_term_id: RwSignal<Option<lapce_rpc::terminal::TermId>>,
     // ACP Agent state
     pub agent_status: RwSignal<AgentStatus>,
     pub agent_session_id: RwSignal<Option<String>>,
@@ -207,6 +222,13 @@ pub struct WindowTabData {
     pub agent_messages: RwSignal<Vec<AgentMessage>>,
     // Agent UI state
     pub agent: crate::agent::AgentData,
+    // Unreal Engine Bridge state
+    pub bridge_status: RwSignal<BridgeStatus>,
+    pub bridge_clients: RwSignal<Vec<UEClient>>,
+    pub bridge_port: RwSignal<Option<u16>>,
+    pub bridge_rpc: BridgeRpcHandler,
+    pub plugin_status: RwSignal<PluginStatus>,
+    pub show_plugin_banner: RwSignal<bool>,
 }
 
 impl std::fmt::Debug for WindowTabData {
@@ -566,11 +588,110 @@ impl WindowTabData {
                 cx,
                 main_split.editors,
                 common.clone(),
-                agent_workspace_path,
+                agent_workspace_path.clone(),
             );
             agent.setup_notification_effect();
             agent
         };
+
+        // Initialize Unreal Engine bridge
+        let bridge_rpc = BridgeRpcHandler::new();
+        let bridge_status = cx.create_rw_signal(BridgeStatus::Stopped);
+        let bridge_clients: RwSignal<Vec<UEClient>> = cx.create_rw_signal(Vec::new());
+        let bridge_port = cx.create_rw_signal(None);
+        let plugin_status = cx.create_rw_signal(PluginStatus::Unknown);
+        let show_plugin_banner = cx.create_rw_signal(true);
+
+        // Start bridge runtime in background thread
+        let (bridge_notification_tx, bridge_notification_rx) = crossbeam_channel::unbounded();
+        start_bridge_runtime(bridge_rpc.clone(), bridge_notification_tx);
+
+        // Set up bridge notification handler - spawn a thread that forwards
+        // crossbeam notifications to a std mpsc channel for floem compatibility
+        {
+            let (mpsc_tx, mpsc_rx) = std::sync::mpsc::channel();
+
+            // Spawn thread to bridge crossbeam -> std mpsc
+            std::thread::Builder::new()
+                .name("BridgeNotificationBridge".to_string())
+                .spawn(move || {
+                    while let Ok(notification) = bridge_notification_rx.recv() {
+                        if mpsc_tx.send(notification).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .expect("Failed to spawn bridge notification handler thread");
+
+            // Create signal from the std mpsc channel
+            let notification_signal = create_signal_from_channel(mpsc_rx);
+
+            // Handle notifications reactively
+            cx.create_effect(move |_| {
+                if let Some(notification) = notification_signal.get() {
+                    match notification {
+                        BridgeNotification::ServerStarted { port } => {
+                            bridge_port.set(Some(port));
+                            bridge_status.set(BridgeStatus::Listening);
+                            tracing::info!("Bridge server started on port {}", port);
+                        }
+                        BridgeNotification::ServerStopped => {
+                            bridge_port.set(None);
+                            bridge_status.set(BridgeStatus::Stopped);
+                        }
+                        BridgeNotification::ClientConnected(client) => {
+                            tracing::info!("UE client connected: {} ({})", client.project_name, client.session_id);
+                            bridge_clients.update(|clients| clients.push(client));
+                            bridge_status.set(BridgeStatus::Connected);
+                        }
+                        BridgeNotification::ClientDisconnected { session_id } => {
+                            bridge_clients.update(|clients| {
+                                clients.retain(|c| c.session_id != session_id);
+                            });
+                            if bridge_clients.get_untracked().is_empty() {
+                                bridge_status.set(BridgeStatus::Listening);
+                            }
+                            tracing::info!("UE client disconnected: {}", session_id);
+                        }
+                        BridgeNotification::Error { message } => {
+                            tracing::error!("Bridge error: {}", message);
+                        }
+                        BridgeNotification::CommandResponse(_) => {
+                            // Command responses are handled by the RPC handler
+                        }
+                    }
+                }
+            });
+        }
+
+        // Check if this is an Unreal project and start bridge if so
+        if is_unreal_project(&agent_workspace_path) {
+            tracing::info!("Detected Unreal project at {:?}, starting bridge", agent_workspace_path);
+            bridge_rpc.start();
+
+            // Check plugin status
+            match check_plugin_version(&agent_workspace_path) {
+                Ok(info) => {
+                    let status = if !info.installed {
+                        PluginStatus::NotInstalled
+                    } else if info.update_available {
+                        PluginStatus::UpdateAvailable {
+                            installed_version: info.installed_version_name.unwrap_or_default(),
+                            bundled_version: info.bundled_version_name,
+                        }
+                    } else {
+                        PluginStatus::Installed {
+                            version: info.installed_version_name.unwrap_or_default(),
+                        }
+                    };
+                    plugin_status.set(status);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check plugin version: {}", e);
+                    plugin_status.set(PluginStatus::Unknown);
+                }
+            }
+        }
 
         let window_tab_data = Self {
             scope: cx,
@@ -605,8 +726,15 @@ impl WindowTabData {
             common,
             // Unreal Engine IDE state
             view_mode: cx.create_rw_signal(ViewMode::Ide),
-            build_target: cx.create_rw_signal("MyGameEditor".to_string()),
+            build_target: cx.create_rw_signal(String::new()),
             build_config: cx.create_rw_signal(BuildConfig::Development),
+            build_targets: cx.create_rw_signal(Vec::new()),
+            build_state: cx.create_rw_signal(BuildState::Idle),
+            build_progress: cx.create_rw_signal(0.0),
+            build_message: cx.create_rw_signal(String::new()),
+            uproject_path: cx.create_rw_signal(None),
+            build_term_id: cx.create_rw_signal(None),
+            editor_term_id: cx.create_rw_signal(None),
             // ACP Agent state
             agent_status: cx.create_rw_signal(AgentStatus::Disconnected),
             agent_session_id: cx.create_rw_signal(None),
@@ -614,6 +742,13 @@ impl WindowTabData {
             agent_messages: cx.create_rw_signal(Vec::new()),
             // Agent UI state
             agent,
+            // Unreal Engine Bridge state
+            bridge_status,
+            bridge_clients,
+            bridge_port,
+            bridge_rpc,
+            plugin_status,
+            show_plugin_banner,
         };
 
         {
@@ -630,6 +765,11 @@ impl WindowTabData {
                     rename_active.set(false);
                 }
             });
+        }
+
+        // Load build targets if this is an Unreal project
+        if window_tab_data.is_unreal_project() {
+            window_tab_data.load_build_targets();
         }
 
         {
@@ -3019,6 +3159,330 @@ impl WindowTabData {
             item.get_untracked().item.as_ref().clone(),
             send,
         );
+    }
+
+    /// Install or update the NeoStack plugin for Unreal Engine
+    pub fn install_ue_plugin(&self) {
+        if let Some(workspace_path) = &self.workspace.path {
+            match install_plugin(workspace_path) {
+                Ok(()) => {
+                    // Refresh plugin status
+                    self.check_ue_plugin_status();
+                    // Hide banner
+                    self.show_plugin_banner.set(false);
+                    tracing::info!("NeoStack plugin installed successfully");
+                }
+                Err(e) => {
+                    tracing::error!("Failed to install NeoStack plugin: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Check the NeoStack plugin status
+    pub fn check_ue_plugin_status(&self) {
+        if let Some(workspace_path) = &self.workspace.path {
+            match check_plugin_version(workspace_path) {
+                Ok(info) => {
+                    let status = if !info.installed {
+                        PluginStatus::NotInstalled
+                    } else if info.update_available {
+                        PluginStatus::UpdateAvailable {
+                            installed_version: info.installed_version_name.unwrap_or_default(),
+                            bundled_version: info.bundled_version_name,
+                        }
+                    } else {
+                        PluginStatus::Installed {
+                            version: info.installed_version_name.unwrap_or_default(),
+                        }
+                    };
+                    self.plugin_status.set(status);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to check plugin version: {}", e);
+                    self.plugin_status.set(PluginStatus::Unknown);
+                }
+            }
+        }
+    }
+
+    /// Check if current workspace is an Unreal Engine project
+    pub fn is_unreal_project(&self) -> bool {
+        self.workspace.path
+            .as_ref()
+            .map(|p| is_unreal_project(p))
+            .unwrap_or(false)
+    }
+
+    /// Find and load .uproject file from workspace
+    pub fn find_uproject(&self) -> Option<PathBuf> {
+        let workspace_path = self.workspace.path.as_ref()?;
+
+        // Look for .uproject file in workspace root
+        if let Ok(entries) = std::fs::read_dir(workspace_path) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map(|e| e == "uproject").unwrap_or(false) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Load build targets from the UE project
+    pub fn load_build_targets(&self) {
+        if let Some(uproject_path) = self.find_uproject() {
+            self.uproject_path.set(Some(uproject_path.clone()));
+
+            // Use fast target discovery (parsing .Target.cs files)
+            match find_build_targets_fast(&uproject_path) {
+                Ok(targets) => {
+                    // Auto-select first Editor target
+                    if let Some(editor_target) = targets.iter().find(|t| t.target_type == "Editor") {
+                        self.build_target.set(editor_target.name.clone());
+                    } else if let Some(first) = targets.first() {
+                        self.build_target.set(first.name.clone());
+                    }
+                    self.build_targets.set(targets);
+                    tracing::info!("Loaded {} build targets", self.build_targets.get_untracked().len());
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load build targets: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Start a build for the selected target using the terminal panel
+    pub fn start_build(&self) {
+        let build_state = self.build_state.get_untracked();
+        if build_state != BuildState::Idle {
+            tracing::warn!("Cannot start build: build already in progress");
+            return;
+        }
+
+        let uproject_path = match self.uproject_path.get_untracked() {
+            Some(path) => path,
+            None => {
+                tracing::warn!("Cannot start build: no .uproject file found");
+                return;
+            }
+        };
+
+        let target_name = self.build_target.get_untracked();
+        if target_name.is_empty() {
+            tracing::warn!("Cannot start build: no target selected");
+            return;
+        }
+
+        let config = self.build_config.get_untracked();
+
+        // Find engine and build script
+        let engine_path = match find_engine_path(&uproject_path) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::error!("Cannot start build: {}", e);
+                return;
+            }
+        };
+
+        let build_script = get_build_script(&engine_path);
+        if !build_script.exists() {
+            tracing::error!("Build script not found at: {}", build_script.display());
+            return;
+        }
+
+        let project_dir = uproject_path.parent().map(|p| p.to_path_buf());
+
+        // Create RunDebugConfig for the build
+        let run_config = RunDebugConfig {
+            ty: None,
+            name: format!("Build {} ({})", target_name, config),
+            program: build_script.to_string_lossy().to_string(),
+            args: Some(vec![
+                target_name.clone(),
+                get_current_platform().to_string(),
+                config.as_str().to_string(),
+                format!("-Project={}", uproject_path.display()),
+                "-Progress".to_string(),
+                "-NoHotReloadFromIDE".to_string(),
+            ]),
+            cwd: project_dir.map(|p| p.to_string_lossy().to_string()),
+            env: None,
+            prelaunch: None,
+            debug_command: None,
+            dap_id: DapId::next(),
+            tracing_output: false,
+            config_source: ConfigSource::RunInTerminal,
+        };
+
+        let run_debug = RunDebugProcess {
+            mode: RunDebugMode::Run,
+            config: run_config,
+            stopped: false,
+            created: Instant::now(),
+            is_prelaunch: false,
+        };
+
+        // Update state
+        self.build_state.set(BuildState::Building);
+        self.build_progress.set(0.0);
+        self.build_message.set(format!("Building {} ({})...", target_name, config));
+
+        // Create a terminal with the build process
+        let terminal_tab = self.terminal.new_tab_run_debug(Some(run_debug), None);
+
+        // Get the terminal id from the newly created tab
+        if let Some(term) = terminal_tab.active_terminal(false) {
+            self.build_term_id.set(Some(term.term_id));
+
+            // Focus the terminal panel
+            self.common.focus.set(Focus::Panel(PanelKind::Terminal));
+
+            // Watch for terminal process completion
+            let build_state = self.build_state;
+            let build_term_id = self.build_term_id;
+            let term_id = term.term_id;
+            let run_debug_signal = term.run_debug;
+
+            self.scope.create_effect(move |_| {
+                // Check if the terminal process has stopped
+                if let Some(rd) = run_debug_signal.get() {
+                    if rd.stopped {
+                        build_state.set(BuildState::Idle);
+                        build_term_id.set(None);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Cancel an in-progress build
+    pub fn cancel_build(&self) {
+        if self.build_state.get_untracked() == BuildState::Building {
+            if let Some(term_id) = self.build_term_id.get_untracked() {
+                self.build_state.set(BuildState::Cancelling);
+                self.common.proxy.terminal_close(term_id);
+                self.build_term_id.set(None);
+                self.build_state.set(BuildState::Idle);
+                self.build_message.set("Build cancelled".to_string());
+            }
+        }
+    }
+
+    /// Launch Unreal Editor with the project using the terminal panel
+    pub fn launch_ue_editor(&self) {
+        let uproject_path = match self.uproject_path.get_untracked() {
+            Some(path) => path,
+            None => {
+                tracing::warn!("Cannot launch editor: no .uproject file found");
+                return;
+            }
+        };
+
+        // Find engine and editor executable
+        let engine_path = match find_engine_path(&uproject_path) {
+            Ok(path) => path,
+            Err(e) => {
+                tracing::error!("Cannot launch editor: {}", e);
+                return;
+            }
+        };
+
+        let editor_exe = get_editor_executable(&engine_path);
+        if !editor_exe.exists() {
+            tracing::error!("UnrealEditor not found at: {}", editor_exe.display());
+            return;
+        }
+
+        // Get bridge port for NeoStack connection
+        let ws_port = self.bridge_port.get_untracked();
+
+        // Build args
+        let mut args = vec![uproject_path.to_string_lossy().to_string()];
+        if let Some(port) = ws_port {
+            args.push(format!("-NeoStackIDE=ws://127.0.0.1:{}", port));
+        }
+
+        let project_dir = uproject_path.parent().map(|p| p.to_path_buf());
+
+        // Create RunDebugConfig for the editor
+        let run_config = RunDebugConfig {
+            ty: None,
+            name: "Unreal Editor".to_string(),
+            program: editor_exe.to_string_lossy().to_string(),
+            args: Some(args),
+            cwd: project_dir.map(|p| p.to_string_lossy().to_string()),
+            env: None,
+            prelaunch: None,
+            debug_command: None,
+            dap_id: DapId::next(),
+            tracing_output: false,
+            config_source: ConfigSource::RunInTerminal,
+        };
+
+        let run_debug = RunDebugProcess {
+            mode: RunDebugMode::Run,
+            config: run_config,
+            stopped: false,
+            created: Instant::now(),
+            is_prelaunch: false,
+        };
+
+        self.build_state.set(BuildState::Running);
+        self.build_message.set("Launching Unreal Editor...".to_string());
+
+        // Create a terminal with the editor process
+        let terminal_tab = self.terminal.new_tab_run_debug(Some(run_debug), None);
+
+        // Get the terminal id
+        if let Some(term) = terminal_tab.active_terminal(false) {
+            self.editor_term_id.set(Some(term.term_id));
+
+            // Focus the terminal panel
+            self.common.focus.set(Focus::Panel(PanelKind::Terminal));
+
+            tracing::info!("Launched Unreal Editor in terminal");
+            self.build_message.set("Unreal Editor running".to_string());
+
+            // Watch for terminal process completion
+            let build_state = self.build_state;
+            let editor_term_id = self.editor_term_id;
+            let run_debug_signal = term.run_debug;
+
+            self.scope.create_effect(move |_| {
+                if let Some(rd) = run_debug_signal.get() {
+                    if rd.stopped {
+                        build_state.set(BuildState::Idle);
+                        editor_term_id.set(None);
+                    }
+                }
+            });
+        }
+    }
+
+    /// Run the project: launch editor
+    pub fn run_project(&self) {
+        let build_state = self.build_state.get_untracked();
+        if build_state != BuildState::Idle {
+            tracing::warn!("Cannot run: build already in progress");
+            return;
+        }
+
+        self.launch_ue_editor();
+    }
+
+    /// Stop a running editor
+    pub fn stop_running(&self) {
+        if self.build_state.get_untracked() == BuildState::Running {
+            if let Some(term_id) = self.editor_term_id.get_untracked() {
+                self.common.proxy.terminal_close(term_id);
+                self.editor_term_id.set(None);
+            }
+            self.build_state.set(BuildState::Idle);
+            self.build_message.set(String::new());
+        }
     }
 }
 

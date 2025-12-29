@@ -1,0 +1,8 @@
+{
+	"BuildId": "47537391",
+	"Modules": 
+	{
+		"NeoStack": "UnrealEditor-NeoStack.dll",
+		"NeoStackBridge": "UnrealEditor-NeoStackBridge.dll"
+	}
+}

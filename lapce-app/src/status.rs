@@ -18,6 +18,7 @@ use lsp_types::{DiagnosticSeverity, ProgressToken};
 
 use crate::{
     app::clickable_icon,
+    bridge::{bridge_status_indicator, BridgeStatus, PluginStatus, UEClient},
     command::LapceWorkbenchCommand,
     config::{LapceConfig, color::LapceColor, icon::LapceIcons},
     editor::EditorData,
@@ -71,6 +72,7 @@ pub fn status(
     };
 
     let progresses = window_tab_data.progresses;
+    let window_tab_data_bridge = window_tab_data.clone();
     let mode = create_memo(move |_| window_tab_data.mode());
     let pointer_down = floem::reactive::create_rw_signal(false);
 
@@ -226,6 +228,32 @@ pub fn status(
                 })
             },
             progress_view(config, progresses),
+            // UE Bridge status indicator
+            {
+                let window_tab_data = window_tab_data_bridge.clone();
+                let is_ue_project = window_tab_data.is_unreal_project();
+                let bridge_status = window_tab_data.bridge_status;
+                let bridge_clients = window_tab_data.bridge_clients;
+                let plugin_status = window_tab_data.plugin_status;
+
+                bridge_status_indicator(
+                    config,
+                    bridge_status,
+                    bridge_clients,
+                    plugin_status,
+                    move || {
+                        window_tab_data.install_ue_plugin();
+                    },
+                )
+                .style(move |s| {
+                    // Only show for Unreal projects
+                    s.display(if is_ue_project {
+                        floem::style::Display::Flex
+                    } else {
+                        floem::style::Display::None
+                    })
+                })
+            },
         ))
         .style(|s| {
             s.height_pct(100.0)

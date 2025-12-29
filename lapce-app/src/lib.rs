@@ -1,6 +1,10 @@
 pub mod about;
 pub mod acp;
 pub mod agent;
+pub mod auth;
+pub mod bridge;
+pub mod build;
+
 pub mod alert;
 pub mod app;
 pub mod code_action;
@@ -44,6 +48,7 @@ pub mod tracing;
 pub mod update;
 pub mod wave;
 pub mod web_link;
+pub mod welcome;
 pub mod window;
 pub mod window_tab;
 pub mod workspace;
