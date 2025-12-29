@@ -18,10 +18,17 @@ pub type RequestId = u64;
 
 /// RPC messages sent to the agent runtime
 pub enum AgentRpc {
-    /// Connect to an agent
+    /// Connect to an agent (new session)
     Connect {
         config: AgentConfig,
         workspace_path: PathBuf,
+    },
+    /// Resume an existing agent session
+    ResumeSession {
+        config: AgentConfig,
+        workspace_path: PathBuf,
+        /// The agent session ID to resume (stored by the agent itself)
+        agent_session_id: String,
     },
     /// Send a prompt
     Prompt {
@@ -32,6 +39,11 @@ pub enum AgentRpc {
     /// Cancel the current operation
     Cancel {
         session_id: String,
+    },
+    /// Set the model for the current session
+    SetModel {
+        session_id: String,
+        model_id: String,
     },
     /// Respond to a permission request
     PermissionResponse {
@@ -113,7 +125,7 @@ impl AgentRpcHandler {
         &self.rx
     }
 
-    /// Connect to an agent with the given configuration
+    /// Connect to an agent with the given configuration (new session)
     pub fn connect(&self, config: AgentConfig, workspace_path: PathBuf) {
         tracing::info!("AgentRpcHandler: Sending Connect message for {}", config.command);
         match self.tx.send(AgentRpc::Connect {
@@ -122,6 +134,19 @@ impl AgentRpcHandler {
         }) {
             Ok(_) => tracing::info!("AgentRpcHandler: Connect message sent successfully"),
             Err(e) => tracing::error!("AgentRpcHandler: Failed to send Connect message: {}", e),
+        }
+    }
+
+    /// Resume an existing agent session
+    pub fn resume_session(&self, config: AgentConfig, workspace_path: PathBuf, agent_session_id: String) {
+        tracing::info!("AgentRpcHandler: Sending ResumeSession message for {} with session {}", config.command, agent_session_id);
+        match self.tx.send(AgentRpc::ResumeSession {
+            config,
+            workspace_path,
+            agent_session_id,
+        }) {
+            Ok(_) => tracing::info!("AgentRpcHandler: ResumeSession message sent successfully"),
+            Err(e) => tracing::error!("AgentRpcHandler: Failed to send ResumeSession message: {}", e),
         }
     }
 
@@ -160,6 +185,12 @@ impl AgentRpcHandler {
     /// Cancel the current operation
     pub fn cancel(&self, session_id: String) {
         let _ = self.tx.send(AgentRpc::Cancel { session_id });
+    }
+
+    /// Set the model for the current session
+    pub fn set_model(&self, session_id: String, model_id: String) {
+        tracing::info!("AgentRpcHandler: Setting model to {} for session {}", model_id, session_id);
+        let _ = self.tx.send(AgentRpc::SetModel { session_id, model_id });
     }
 
     /// Respond to a permission request

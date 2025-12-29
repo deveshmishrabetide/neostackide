@@ -154,15 +154,28 @@ impl Client for LapceAcpClient {
                     .map(|s| matches!(s, ToolCallStatus::Completed))
                     .unwrap_or(true);
 
-                // Get output from content if available (ToolCallContent is different from ContentBlock)
-                let output = update.fields.content
-                    .as_ref()
-                    .map(|blocks| {
-                        blocks.iter()
-                            .map(|b| format!("{:?}", b))  // Just debug print for now
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    });
+                // Extract text from tool content
+                let output = update.fields.content.as_ref().map(|blocks| {
+                    blocks.iter().filter_map(|block| {
+                        match block {
+                            super::ToolCallContent::Content(content) => {
+                                // Content has a single `content` field (ContentBlock)
+                                match &content.content {
+                                    ContentBlock::Text(t) => Some(t.text.clone()),
+                                    _ => None,
+                                }
+                            }
+                            super::ToolCallContent::Diff(diff) => {
+                                // Show diff summary
+                                Some(format!("[Diff: {}]", diff.path.display()))
+                            }
+                            super::ToolCallContent::Terminal(term) => {
+                                Some(format!("[Terminal: {}]", term.terminal_id.0))
+                            }
+                            _ => None,
+                        }
+                    }).collect::<Vec<_>>().join("\n")
+                });
 
                 self.notify(AgentNotification::ToolCompleted {
                     tool_id: update.tool_call_id.0.to_string(),
@@ -184,7 +197,7 @@ impl Client for LapceAcpClient {
                 self.notify(AgentNotification::Message(AgentMessage {
                     id: 0, // Will be assigned by AgentData
                     role: MessageRole::Agent,
-                    content: MessageContent::Thinking(format!("Plan:\n{}", plan_text)),
+                    parts: vec![MessagePart::Reasoning(format!("Plan:\n{}", plan_text))],
                     timestamp: std::time::Instant::now(),
                 }));
             }

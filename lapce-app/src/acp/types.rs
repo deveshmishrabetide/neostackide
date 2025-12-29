@@ -104,20 +104,21 @@ pub enum AgentStatus {
 }
 
 /// A message in the agent conversation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMessage {
     /// Unique ID for this message (used for stable UI keying)
     pub id: u64,
     /// Who sent the message
     pub role: MessageRole,
-    /// The message content
-    pub content: MessageContent,
-    /// Timestamp when the message was created
+    /// The message parts (text, tool calls, etc.) in order
+    pub parts: Vec<MessagePart>,
+    /// Timestamp when the message was created (not serialized)
+    #[serde(skip, default = "std::time::Instant::now")]
     pub timestamp: std::time::Instant,
 }
 
 /// Role of the message sender
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MessageRole {
     /// Message from the user
     User,
@@ -127,34 +128,45 @@ pub enum MessageRole {
     System,
 }
 
-/// Content of a message
-#[derive(Debug, Clone)]
-pub enum MessageContent {
-    /// Plain text
-    Text(String),
-    /// Code block with optional language
-    Code { language: Option<String>, code: String },
-    /// A file diff
-    Diff { path: PathBuf, diff: String },
-    /// Tool use notification
-    ToolUse { name: String, status: ToolUseStatus },
-    /// Error message
-    Error(String),
-    /// Thinking/processing indicator
-    Thinking(String),
-}
-
-/// Status of a tool use
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolUseStatus {
+/// State of a tool call execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolCallState {
     /// Tool is currently executing
-    InProgress,
+    Running,
     /// Tool completed successfully
-    Success,
+    Completed,
     /// Tool failed
     Failed,
-    /// User cancelled the tool
-    Cancelled,
+}
+
+/// A part of a message (text, tool call, etc.)
+/// Messages contain multiple parts to support interleaved content.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MessagePart {
+    /// Plain text content
+    Text(String),
+
+    /// Thinking/reasoning block (collapsible)
+    Reasoning(String),
+
+    /// Tool call with merged result (single collapsible unit)
+    ToolCall {
+        /// Unique identifier for this tool call
+        tool_call_id: String,
+        /// Name of the tool being called
+        name: String,
+        /// Pretty-printed JSON input arguments
+        args: Option<String>,
+        /// Current execution state
+        state: ToolCallState,
+        /// Result output (populated when completed)
+        output: Option<String>,
+        /// Whether the result was an error
+        is_error: bool,
+    },
+
+    /// Error message
+    Error(String),
 }
 
 /// A request for permission from the agent
@@ -190,6 +202,17 @@ pub struct PermissionResponse {
     pub selected_option: Option<String>,
 }
 
+/// Information about an available model
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInfo {
+    /// Unique model ID (used when setting model)
+    pub id: String,
+    /// Display name for the model
+    pub name: String,
+    /// Optional description
+    pub description: Option<String>,
+}
+
 /// Events emitted by the ACP client for UI updates (legacy)
 #[derive(Debug, Clone)]
 pub enum AcpEvent {
@@ -222,6 +245,13 @@ pub enum AgentNotification {
     Disconnected,
     /// Agent status changed
     StatusChanged(AgentStatus),
+    /// Available models from the agent
+    ModelsAvailable {
+        /// List of available models
+        models: Vec<ModelInfo>,
+        /// Currently selected model ID
+        current_model_id: Option<String>,
+    },
     /// Text chunk received (for streaming display)
     TextChunk { text: String },
     /// Complete message received (add to history)

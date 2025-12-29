@@ -1,0 +1,287 @@
+{
+  "chats": [
+    {
+      "id": "8b49a5e8-07d5-48d0-b331-95c959416988",
+      "title": "How are you doing good?\n",
+      "provider": "Claude",
+      "status": "Streaming",
+      "created_at": 1766978153,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": "66d672b3-3709-4648-938e-3856e606c5d1"
+    },
+    {
+      "id": "9283f464-36db-4288-961d-62163a7df8f6",
+      "title": "Hello! My name is Devesh\n",
+      "provider": "Claude",
+      "status": "Streaming",
+      "created_at": 1766976607,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": "55b789b2-3686-4d62-81a4-7a7551cf6318"
+    },
+    {
+      "id": "b0529570-b89d-4fa1-8814-948676bd2b80",
+      "title": "You know what my name is?\n",
+      "provider": "Claude",
+      "status": "Streaming",
+      "created_at": 1766976427,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": null
+    },
+    {
+      "id": "7ea2d219-b4c7-404d-b116-788579fddec0",
+      "title": "You know, my name is Devesh\n",
+      "provider": "Claude",
+      "status": "Streaming",
+      "created_at": 1766976049,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": "5bc8a85d-c5d8-42e3-9259-ad25180ad96d"
+    },
+    {
+      "id": "21cfa1a1-5052-4c99-9514-06bf0504600a",
+      "title": "New chat",
+      "provider": "Claude",
+      "status": "Idle",
+      "created_at": 1766975702,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": null
+    },
+    {
+      "id": "69ba9d6a-4495-444c-8808-c530989f58cd",
+      "title": "Myname is devesh\n",
+      "provider": "Claude",
+      "status": "Idle",
+      "created_at": 1766947153,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": null
+    },
+    {
+      "id": "c9f4ecee-8aa1-443c-977a-e35677538471",
+      "title": "How are you doing sir? ",
+      "provider": "Claude",
+      "status": "Streaming",
+      "created_at": 1766943807,
+      "unread": false,
+      "cost_usd": 0.0,
+      "token_count": 0,
+      "agent_session_id": null
+    }
+  ],
+  "messages": {
+    "b0529570-b89d-4fa1-8814-948676bd2b80": [
+      {
+        "id": 9,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "You know what my name is?\n"
+          }
+        ]
+      }
+    ],
+    "8b49a5e8-07d5-48d0-b331-95c959416988": [
+      {
+        "id": 16,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "How are you doing good?\n"
+          }
+        ]
+      },
+      {
+        "id": 17,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "I'm doing well, thanks for asking! How can I help you with your project today?"
+          }
+        ]
+      },
+      {
+        "id": 18,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "Which model are you?\n"
+          }
+        ]
+      },
+      {
+        "id": 19,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "I'm Claude Opus 4.5 (model ID: `claude-opus-4-5-20251101`). It's Anthropic's most recent frontier model."
+          }
+        ]
+      }
+    ],
+    "c9f4ecee-8aa1-443c-977a-e35677538471": [
+      {
+        "id": 1,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "How are you doing sir? "
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "I'm doing well, thanks for asking! How can I help you today with your NeoStack IDE project?"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "Can you read two files?\n\n\nAny two files work\n"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "Sure, let me read a couple of files from your project."
+          },
+          {
+            "ToolCall": {
+              "tool_call_id": "toolu_01RizH8jpAwWDWmcQTmvvmLN",
+              "name": "Read /Users/devesh/Documents/NeoStackProjects/neostackide/Cargo.toml",
+              "args": "{\n  \"file_path\": \"/Users/devesh/Documents/NeoStackProjects/neostackide/Cargo.toml\"\n}",
+              "state": "Completed",
+              "output": "```\n[package]\nname         = \"lapce\"\nversion      = { workspace = true }\nauthors      = { workspace = true }\nedition      = { workspace = true }\nlicense      = { workspace = true }\nrust-version = { workspace = true }\ndefault-run  = \"lapce\"\n\n[dependencies]\nlapce-app   = { path = \"./lapce-app\" }\nlapce-proxy = { path = \"./lapce-proxy\" }\n\n[[bin]]\nname = \"lapce\"\npath = \"lapce-app/src/bin/lapce.rs\"\n\n[[bin]]\nname = \"lapce-proxy\"\npath = \"lapce-proxy/src/bin/lapce-proxy.rs\"\n\n[workspace]\nmembers = [\"lapce-app\", \"lapce-proxy\", \"lapce-rpc\", \"lapce-core\"]\n\n[workspace.package]\nversion      = \"0.4.5\"\nedition      = \"2024\"\nrust-version = \"1.87.0\"\nlicense      = \"Apache-2.0\"\nhomepage     = \"https://lapce.dev\"\nauthors      = [\"Dongdong Zhou <dzhou121@gmail.com>\"]\n\n[workspace.dependencies]\nanyhow            = { version = \"1.0\" }\nbacktrace         = { version = \"0.3\" }\nchrono            = { version = \"0.4\", features = [\"serde\"] }\nclap              = { version = \"4.5.0\", default-features = false, features = [\"std\", \"help\", \"usage\", \"derive\"] }\ncrossbeam-channel = { version = \"0.5.12\" }\ndirectories       = { version = \"4.0.1\" }\nflate2            = { version = \"1.0\" }\ngit2              = { version = \"0.20.0\", features = [\"vendored-openssl\"] }\nglobset           = { version = \"0.4.14\" }\nhashbrown         = { version = \"0.14.5\", features = [\"serde\"] }\nim                = { version = \"15.0.0\", features = [\"serde\"] }\ninclude_dir       = { version = \"0.7\" }\nindexmap          = { version = \"2.0\", features = [\"serde\"] }\ninterprocess      = { version = \"1.2.1\" }\nitertools         = { version = \"0.12.1\" }\nnotify            = { version = \"5.2.0\", features = [\"serde\"] }\nonce_cell         = { version = \"1.19\" }\nparking_lot       = { version = \"0.12.3\" }\nrayon             = { version = \"1.10.0\" }\nregex             = { version = \"1.10.5\" }\nremain            = { version = \"0.2\" }\nsemver            = { version = \"1.0\" }\nreqwest           = { version = \"0.11\", features = [\"blocking\", \"json\", \"socks\"] }\nserde             = { version = \"1.0\" }\nserde_json        = { version = \"1.0\" }\nsmallvec          = { version = \"1.15.1\" }\nstrum             = { version = \"0.27.1\" }\nstrum_macros      = { version = \"0.27.1\" }\ntar               = { version = \"0.4\" }\ntempfile          = { version = \"3.10.1\" }\nthiserror         = { version = \"1.0\" }\ntoml              = { version = \"*\" }\ntoml_edit         = { version = \"0.20.2\", features = [\"serde\"] }\nurl               = { version = \"2.5.0\" }\nzstd              = { version = \"0.11.2\" }                                                                         # follow same version wasmtime-cache in lockfile\n\nlsp-types = { version = \"0.95.1\", features = [\"proposed\"] }                                                  # not following semver, so should be locked to patch version updates only\npsp-types = { git = \"https://github.com/lapce/psp-types\", rev = \"f7fea28f59e7b2d6faa1034a21679ad49b3524ad\" }\n\nlapce-xi-rope = { version = \"0.3.2\", features = [\"serde\"] }\n\nlapce-core  = { path = \"./lapce-core\" }\nlapce-rpc   = { path = \"./lapce-rpc\" }\nlapce-proxy = { path = \"./lapce-proxy\" }\n\nfloem = { git = \"https://github.com/lapce/floem\", rev = \"e0dd862564e3afbad5cba8ebe60df166a7a41e56\", features = [\"editor\", \"serde\", \"default-image-formats\", \"rfd-async-std\"] }\n# floem = { path = \"../floem\", features = [\"editor\", \"serde\", \"default-image-formats\", \"rfd-async-std\"] }\nfloem-editor-core = { git = \"https://github.com/lapce/floem\", rev = \"e0dd862564e3afbad5cba8ebe60df166a7a41e56\", features = [\"serde\"] }\n# floem-editor-core = { path = \"../floem/editor-core/\", features = [\"serde\"] }\n\n[patch.crates-io]\n# Temporarily patch lsp-types with a version that adds message-type debug\nlsp-types = { git = \"https://github.com/lapce/lsp-types\", rev = \"feaa1e2ec80975c9dadd400a238ceacf071058e6\" }\nregalloc2 = { rev = \"5d79e12d0a93b10fc181f4da409b4671dd365228\", git = \"https://github.com/bytecodealliance/regalloc2\" }\n\n# cargo vendor issue: https://github.com/rust-lang/cargo/issues/10310\n# dpi comes from winit (source) and muda (crate)\ndpi = { git = \"https://github.com/rust-windowing/winit\", rev = \"ee245c569d65fdeacf705ee5eedb564508d10ebe\" }\n\n\n[workspace.dependencies.tracing]\ngit     = \"https://github.com/tokio-rs/tracing\"\nrev     = \"908cc432a5994f6e17c8f36e13c217dc40085704\"\npackage = \"tracing\"\n\n[workspace.dependencies.tracing-log]\ngit     = \"https://github.com/tokio-rs/tracing\"\nrev     = \"908cc432a5994f6e17c8f36e13c217dc40085704\"\npackage = \"tracing-log\"\n\n[workspace.dependencies.tracing-subscriber]\ngit     = \"https://github.com/tokio-rs/tracing\"\nrev     = \"908cc432a5994f6e17c8f36e13c217dc40085704\"\npackage = \"tracing-subscriber\"\n\n[workspace.dependencies.tracing-appender]\ngit     = \"https://github.com/tokio-rs/tracing\"\nrev     = \"908cc432a5994f6e17c8f36e13c217dc40085704\"\npackage = \"tracing-appender\"\n\n[workspace.dependencies.alacritty_terminal]\ngit = \"https://github.com/alacritty/alacritty\"\nrev = \"cacdb5bb3b72bad2c729227537979d95af75978f\"\n\n[workspace.dependencies.windows-sys]\nversion  = \"0\"\nfeatures = [\"Win32_Foundation\"]\n\n[profile.release-lto]\ninherits      = \"release\"\nlto           = true\ncodegen-units = 1\n\n# A profile which compiles all (non-workspace) dependencies in release mode\n# but Lapce code in dev mode. This gives a good debugging experience for your\n# code and fast performance of other people's code. After the initial\n# build subsequent ones are as fast as dev mode builds.\n# See https://doc.rust-lang.org/cargo/reference/profiles.html\n# To use this profile:\n#   cargo build --profile fastdev\n#   cargo run --profile fastdev --bin lapce\n[profile.fastdev.package.\"*\"]\nopt-level = 3\n\n[profile.fastdev]\ninherits = \"dev\"\n```",
+              "is_error": false
+            }
+          },
+          {
+            "ToolCall": {
+              "tool_call_id": "toolu_01C4ZbfDg9y7AuFTnSJQmT8Z",
+              "name": "Read /Users/devesh/Documents/NeoStackProjects/neostackide/lapce-app/src/acp/mod.rs",
+              "args": "{\n  \"file_path\": \"/Users/devesh/Documents/NeoStackProjects/neostackide/lapce-app/src/acp/mod.rs\"\n}",
+              "state": "Completed",
+              "output": "```\n//! ACP (Agent Client Protocol) integration for Lapce\n//!\n//! This module provides the client-side implementation of ACP,\n//! allowing Lapce to communicate with AI coding agents like\n//! Claude Code, Gemini CLI, Codex, etc.\n//!\n//! ## Architecture\n//!\n//! The ACP integration follows Lapce's proxy pattern:\n//! - `AgentRpcHandler` - Sends commands to the agent runtime (like `ProxyRpcHandler`)\n//! - `AgentRuntime` - Runs tokio in a background thread, handles async ACP operations\n//! - `AgentNotification` - Events from agent to UI (via channel → reactive signal)\n//! - `LapceAcpClient` - Implements the ACP `Client` trait for agent callbacks\n\nmod client;\nmod connection;\npub mod rpc;\npub mod runtime;\nmod types;\n\npub use client::LapceAcpClient;\npub use connection::{AgentConnection, AgentManager};\npub use rpc::AgentRpcHandler;\npub use runtime::start_agent_runtime;\npub use types::*;\n\n// Re-export key ACP types for convenience\npub use agent_client_protocol::{\n    self as acp,\n    Agent,\n    Client,\n    ClientSideConnection,\n    InitializeRequest,\n    NewSessionRequest,\n    PromptRequest,\n    CancelNotification,\n    SessionNotification,\n    SessionUpdate,\n    ContentBlock,\n    ContentChunk,\n    TextContent,\n    ToolCall,\n    ToolCallUpdate,\n    ToolCallContent,\n    ReadTextFileRequest,\n    ReadTextFileResponse,\n    WriteTextFileRequest,\n    WriteTextFileResponse,\n    CreateTerminalRequest,\n    CreateTerminalResponse,\n    TerminalOutputRequest,\n    TerminalOutputResponse,\n    ReleaseTerminalRequest,\n    ReleaseTerminalResponse,\n    WaitForTerminalExitRequest,\n    WaitForTerminalExitResponse,\n    KillTerminalCommandRequest,\n    KillTerminalCommandResponse,\n    RequestPermissionRequest,\n    RequestPermissionResponse,\n    RequestPermissionOutcome,\n    SelectedPermissionOutcome,\n    PermissionOption,\n    PermissionOptionId,\n    PermissionOptionKind,\n    ProtocolVersion,\n    Implementation,\n    ClientCapabilities,\n    FileSystemCapability,\n    TerminalId,\n    TerminalExitStatus,\n    Error as AcpError,\n    Result as AcpResult,\n};\n```",
+              "is_error": false
+            }
+          },
+          {
+            "Text": "Done! Here's a summary of the two files I read:\n\n1. **Cargo.toml** - The main workspace configuration for Lapce/NeoStack IDE. It defines:\n   - Two binaries: `lapce` and `lapce-proxy`\n   - Four workspace members: `lapce-app`, `lapce-proxy`, `lapce-rpc`, `lapce-core`\n   - Version 0.4.5, Rust edition 2024, minimum Rust version 1.87.0\n   - Dependencies including floem (UI framework), lsp-types, tracing, alacritty_terminal, and more\n\n2. **lapce-app/src/acp/mod.rs** - The ACP (Agent Client Protocol) module that enables communication with AI coding agents like Claude Code. It exports:\n   - `AgentRpcHandler`, `AgentRuntime`, `LapceAcpClient`\n   - Various ACP types for sessions, prompts, tool calls, file operations, and terminal management\n\nIs there anything specific you'd like to explore in these files or elsewhere in the project?"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "Myname is devesh\n"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "You know what I asked before?\n"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "I don't have access to any previous conversation history with you. This appears to be the start of our conversation, so I don't know what you may have asked before.\n\nCould you please tell me what you'd like help with? I'm ready to assist with software engineering tasks in your NeoStack IDE project."
+          }
+        ]
+      }
+    ],
+    "7ea2d219-b4c7-404d-b116-788579fddec0": [
+      {
+        "id": 8,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "You know, my name is Devesh\n"
+          }
+        ]
+      }
+    ],
+    "9283f464-36db-4288-961d-62163a7df8f6": [
+      {
+        "id": 10,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "Hello! My name is Devesh\n"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "Hello Devesh! How can I help you today with your software engineering tasks?"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "Now you know my name right?\n"
+          }
+        ]
+      },
+      {
+        "id": 13,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "Yes, I do! Your name is Devesh. How can I assist you today?"
+          }
+        ]
+      },
+      {
+        "id": 14,
+        "role": "User",
+        "parts": [
+          {
+            "Text": "do you see the message history?\n"
+          }
+        ]
+      },
+      {
+        "id": 15,
+        "role": "Agent",
+        "parts": [
+          {
+            "Text": "Yes, I can see our conversation history. You introduced yourself as Devesh in your first message, I greeted you, and then you asked if I knew your name. I confirmed that I do.\n\nI also have context about the project you're working in - it appears to be a project called \"neostackide\" (looks like an IDE based on Lapce), and I can see there are some uncommitted changes in files related to an ACP (Agent Communication Protocol?) client, agent components, and other parts of the application.\n\nIs there something specific you'd like help with in this project?"
+          }
+        ]
+      }
+    ]
+  }
+}

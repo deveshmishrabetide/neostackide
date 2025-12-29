@@ -229,14 +229,15 @@ fn date_group_header(
 /// Individual chat item row
 fn chat_item(
     chat: Chat,
-    is_active: bool,
     agent: AgentData,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    let chat_id = chat.id.clone();
+    let chat_id_for_click = chat.id.clone();
+    let chat_id_for_style = chat.id.clone();
     let provider = chat.provider;
     let title = chat.title.clone();
     let status = chat.status;
+    let current_chat_id = agent.current_chat_id;
 
     h_stack((
         // Provider icon
@@ -273,6 +274,8 @@ fn chat_item(
     ))
     .style(move |s| {
         let config = config.get();
+        // Check is_active reactively
+        let is_active = current_chat_id.with(|id| id.as_ref() == Some(&chat_id_for_style));
         let bg = if is_active {
             config.color(LapceColor::PANEL_CURRENT_BACKGROUND)
         } else {
@@ -285,12 +288,16 @@ fn chat_item(
             .gap(8.0)
             .background(bg)
             .cursor(CursorStyle::Pointer)
-            .hover(|s| {
-                s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+            .hover(move |s| {
+                if !is_active {
+                    s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+                } else {
+                    s
+                }
             })
     })
     .on_click_stop(move |_| {
-        agent.select_chat(&chat_id);
+        agent.select_chat(&chat_id_for_click);
     })
 }
 
@@ -301,16 +308,13 @@ fn chat_group(
     agent: AgentData,
     config: ReadSignal<Arc<LapceConfig>>,
 ) -> impl View {
-    let current_id = agent.current_chat_id;
-
     v_stack((
         date_group_header(group, config),
         dyn_stack(
             move || chats.clone(),
             |chat| chat.id.clone(),
             move |chat| {
-                let is_active = current_id.with(|id| id.as_ref() == Some(&chat.id));
-                chat_item(chat, is_active, agent.clone(), config)
+                chat_item(chat, agent.clone(), config)
             },
         )
         .style(|s| s.flex_col().width_full()),

@@ -230,7 +230,7 @@ impl AgentConnection {
         self.notify(AgentNotification::Message(AgentMessage {
             id: 0, // Will be assigned by AgentData
             role: MessageRole::User,
-            content: MessageContent::Text(prompt.clone()),
+            parts: vec![MessagePart::Text(prompt.clone())],
             timestamp: std::time::Instant::now(),
         }));
 

@@ -22,6 +22,17 @@ use super::{
     ClientCapabilities, FileSystemCapability, CancelNotification,
 };
 
+/// Result of a successful connection with session and model info
+struct ConnectionResult {
+    conn: ClientSideConnection,
+    session_id: String,
+    child: tokio::process::Child,
+    /// Available models from the agent
+    models: Vec<ModelInfo>,
+    /// Currently selected model ID
+    current_model_id: Option<String>,
+}
+
 /// State of an active agent connection
 struct ActiveConnection {
     conn: ClientSideConnection,
@@ -81,20 +92,79 @@ impl AgentRuntime {
                     // Run with LocalSet for spawn_local support
                     local.block_on(&rt, async {
                         tracing::info!("AgentRuntime: Starting do_connect...");
-                        match Self::do_connect(config, workspace_path, client).await {
-                            Ok((conn, session_id, child)) => {
-                                tracing::info!("AgentRuntime: Connection successful, session_id: {}", session_id);
+                        match Self::do_connect(config, workspace_path, client, None).await {
+                            Ok(result) => {
+                                tracing::info!("AgentRuntime: Connection successful, session_id: {}", result.session_id);
+                                let session_id = result.session_id.clone();
+                                let models = result.models.clone();
+                                let current_model_id = result.current_model_id.clone();
+
                                 *connection.write() = Some(ActiveConnection {
-                                    conn,
+                                    conn: result.conn,
                                     session_id: session_id.clone(),
-                                    child,
+                                    child: result.child,
                                 });
+
+                                // Send connected notification
                                 let _ = notification_tx.send(AgentNotification::Connected {
                                     session_id,
                                 });
+
+                                // Send available models notification
+                                if !models.is_empty() {
+                                    let _ = notification_tx.send(AgentNotification::ModelsAvailable {
+                                        models,
+                                        current_model_id,
+                                    });
+                                }
                             }
                             Err(e) => {
                                 tracing::error!("AgentRuntime: Connection failed: {}", e);
+                                let _ = notification_tx.send(AgentNotification::Error {
+                                    message: e.to_string(),
+                                });
+                            }
+                        }
+                    });
+                }
+
+                AgentRpc::ResumeSession { config, workspace_path, agent_session_id } => {
+                    tracing::info!("AgentRuntime: Received ResumeSession request for {} with session {}", config.command, agent_session_id);
+                    let connection = self.connection.clone();
+                    let notification_tx = self.notification_tx.clone();
+                    let client = self.client.clone();
+
+                    // Run with LocalSet for spawn_local support
+                    local.block_on(&rt, async {
+                        tracing::info!("AgentRuntime: Starting do_connect with resume...");
+                        match Self::do_connect(config, workspace_path, client, Some(agent_session_id)).await {
+                            Ok(result) => {
+                                tracing::info!("AgentRuntime: Session resumed, session_id: {}", result.session_id);
+                                let session_id = result.session_id.clone();
+                                let models = result.models.clone();
+                                let current_model_id = result.current_model_id.clone();
+
+                                *connection.write() = Some(ActiveConnection {
+                                    conn: result.conn,
+                                    session_id: session_id.clone(),
+                                    child: result.child,
+                                });
+
+                                // Send connected notification
+                                let _ = notification_tx.send(AgentNotification::Connected {
+                                    session_id,
+                                });
+
+                                // Send available models notification
+                                if !models.is_empty() {
+                                    let _ = notification_tx.send(AgentNotification::ModelsAvailable {
+                                        models,
+                                        current_model_id,
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("AgentRuntime: Session resume failed: {}", e);
                                 let _ = notification_tx.send(AgentNotification::Error {
                                     message: e.to_string(),
                                 });
@@ -147,6 +217,24 @@ impl AgentRuntime {
                     });
                 }
 
+                AgentRpc::SetModel { session_id, model_id } => {
+                    let connection = self.connection.clone();
+                    let notification_tx = self.notification_tx.clone();
+
+                    local.block_on(&rt, async {
+                        match Self::do_set_model(&connection, session_id, model_id.clone()).await {
+                            Ok(()) => {
+                                tracing::info!("Model set to: {}", model_id);
+                            }
+                            Err(e) => {
+                                let _ = notification_tx.send(AgentNotification::Error {
+                                    message: e,
+                                });
+                            }
+                        }
+                    });
+                }
+
                 AgentRpc::PermissionResponse { request_id, response } => {
                     self.client.respond_to_permission(&request_id, response);
                 }
@@ -168,8 +256,9 @@ impl AgentRuntime {
         config: AgentConfig,
         workspace_path: PathBuf,
         client: Arc<LapceAcpClient>,
-    ) -> anyhow::Result<(ClientSideConnection, String, tokio::process::Child)> {
-        tracing::info!("do_connect: Spawning agent process: {}", config.command);
+        resume_session_id: Option<String>,
+    ) -> anyhow::Result<ConnectionResult> {
+        tracing::info!("do_connect: Spawning agent process: {}, resume: {:?}", config.command, resume_session_id);
 
         // Spawn the agent process
         let mut cmd = Command::new(&config.command);
@@ -248,14 +337,106 @@ impl AgentRuntime {
         let _init_response = conn.initialize(init_request).await?;
         tracing::info!("do_connect: Initialize response received");
 
-        tracing::info!("do_connect: Creating new session...");
-        // Create a new session
-        let session_request = acp::NewSessionRequest::new(workspace_path);
-        let session_response = conn.new_session(session_request).await?;
-        let session_id = session_response.session_id.0.to_string();
-        tracing::info!("do_connect: Session created with id: {}", session_id);
+        // Create or resume session
+        let (session_id, models, current_model_id) = if let Some(ref session_id_to_resume) = resume_session_id {
+            // Try to load/resume the existing session
+            tracing::info!("do_connect: Attempting to load session: {}", session_id_to_resume);
 
-        Ok((conn, session_id, child))
+            // First, try load_session (for persisted sessions)
+            let load_request = acp::LoadSessionRequest::new(
+                acp::SessionId::new(session_id_to_resume.as_str()),
+                workspace_path.clone(),
+            );
+
+            match conn.load_session(load_request).await {
+                Ok(response) => {
+                    tracing::info!("do_connect: Session loaded successfully via load_session");
+                    let (models, current_model_id) = Self::extract_models_from_response(
+                        response.models.as_ref()
+                    );
+                    (session_id_to_resume.clone(), models, current_model_id)
+                }
+                Err(e) => {
+                    tracing::warn!("do_connect: load_session failed: {}, trying resume_session", e);
+
+                    // Try resume_session as fallback
+                    let resume_request = acp::ResumeSessionRequest::new(
+                        acp::SessionId::new(session_id_to_resume.as_str()),
+                        workspace_path.clone(),
+                    );
+
+                    match conn.resume_session(resume_request).await {
+                        Ok(response) => {
+                            tracing::info!("do_connect: Session resumed via resume_session");
+                            let (models, current_model_id) = Self::extract_models_from_response(
+                                response.models.as_ref()
+                            );
+                            (session_id_to_resume.clone(), models, current_model_id)
+                        }
+                        Err(e2) => {
+                            tracing::warn!("do_connect: resume_session failed: {}, falling back to new_session with _meta", e2);
+
+                            // Final fallback: use new_session with _meta workaround (for older agents)
+                            let mut meta = serde_json::Map::new();
+                            let mut claude_code = serde_json::Map::new();
+                            let mut options = serde_json::Map::new();
+                            options.insert("resume".to_string(), serde_json::Value::String(session_id_to_resume.clone()));
+                            claude_code.insert("options".to_string(), serde_json::Value::Object(options));
+                            meta.insert("claudeCode".to_string(), serde_json::Value::Object(claude_code));
+
+                            let session_request = acp::NewSessionRequest::new(workspace_path.clone()).meta(meta);
+                            let session_response = conn.new_session(session_request).await?;
+                            let new_session_id = session_response.session_id.0.to_string();
+                            tracing::info!("do_connect: Session resumed via _meta fallback, new id: {}", new_session_id);
+
+                            let (models, current_model_id) = Self::extract_models_from_response(
+                                session_response.models.as_ref()
+                            );
+                            (new_session_id, models, current_model_id)
+                        }
+                    }
+                }
+            }
+        } else {
+            // Create a new session
+            tracing::info!("do_connect: Creating new session...");
+            let session_request = acp::NewSessionRequest::new(workspace_path.clone());
+            let session_response = conn.new_session(session_request).await?;
+            let session_id = session_response.session_id.0.to_string();
+            tracing::info!("do_connect: Session created with id: {}", session_id);
+
+            let (models, current_model_id) = Self::extract_models_from_response(
+                session_response.models.as_ref()
+            );
+            (session_id, models, current_model_id)
+        };
+
+        Ok(ConnectionResult {
+            conn,
+            session_id,
+            child,
+            models,
+            current_model_id,
+        })
+    }
+
+    /// Extract models from a session response's model state
+    fn extract_models_from_response(
+        model_state: Option<&acp::SessionModelState>,
+    ) -> (Vec<ModelInfo>, Option<String>) {
+        if let Some(state) = model_state {
+            let models: Vec<ModelInfo> = state.available_models.iter().map(|m| {
+                ModelInfo {
+                    id: m.model_id.0.to_string(),
+                    name: m.name.clone(),
+                    description: m.description.clone(),
+                }
+            }).collect();
+            let current_id = Some(state.current_model_id.0.to_string());
+            (models, current_id)
+        } else {
+            (vec![], None)
+        }
     }
 
     async fn do_prompt(
@@ -299,6 +480,27 @@ impl AgentRuntime {
 
         active.conn
             .cancel(cancel)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
+
+    async fn do_set_model(
+        connection: &Arc<RwLock<Option<ActiveConnection>>>,
+        session_id: String,
+        model_id: String,
+    ) -> Result<(), String> {
+        let conn_guard = connection.read();
+        let active = conn_guard.as_ref().ok_or("Not connected")?;
+
+        let request = acp::SetSessionModelRequest::new(
+            acp::SessionId::new(session_id.as_str()),
+            acp::ModelId::new(model_id.as_str()),
+        );
+
+        active.conn
+            .set_session_model(request)
             .await
             .map_err(|e| e.to_string())?;
 

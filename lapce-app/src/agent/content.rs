@@ -263,6 +263,7 @@ pub fn agent_content(
             move || agent_for_messages.current_messages(),
             move || agent_for_streaming.current_streaming_text(),
             move || agent_for_is_streaming.is_current_streaming(),
+            agent.clone(),
             config,
         ),
         // Error banner

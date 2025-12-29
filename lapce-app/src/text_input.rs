@@ -171,6 +171,11 @@ fn text_input_full<T: KeyPressFocus + 'static>(
                     (content, offset, None)
                 }
             };
+            // Debug: log when content has newlines
+            if content.contains('\n') {
+                eprintln!("TextInput effect MULTILINE: content_len={}, offset={}, content={:?}",
+                    content.len(), offset, content.chars().take(50).collect::<String>());
+            }
             id.update_state(TextInputState::Content {
                 text: content,
                 offset,
@@ -424,8 +429,13 @@ impl TextInput {
                             pct * layout.size.width as f64
                         }
                     };
-                let hit =
-                    text_layout.hit_point(Point::new(point.x - padding_left, 0.0));
+                // Use proper Y coordinate for multi-line text support
+                // Account for vertical viewport offset when scrolled
+                let adjusted_point = Point::new(
+                    point.x - padding_left,
+                    point.y + self.text_viewport.y0,
+                );
+                let hit = text_layout.hit_point(adjusted_point);
                 hit.index.min(self.content.len())
             } else {
                 0
@@ -478,7 +488,19 @@ impl TextInput {
             }
         }
 
-        let rect = Rect::ZERO.with_origin(self.cursor_pos).inflate(10.0, 0.0);
+        // Get line height for vertical padding (default to 20.0 if unavailable)
+        let line_height = self.text_layout.with_untracked(|text_layout| {
+            text_layout
+                .as_ref()
+                .map(|layout| {
+                    let pos = layout.hit_position(0);
+                    pos.glyph_ascent + pos.glyph_descent
+                })
+                .unwrap_or(20.0)
+        });
+
+        // Use line height for vertical padding to ensure cursor context is visible
+        let rect = Rect::ZERO.with_origin(self.cursor_pos).inflate(10.0, line_height);
         // clamp the target region size to our own size.
         // this means we will show the portion of the target region that
         // includes the origin.
@@ -575,7 +597,15 @@ impl View for TextInput {
                 let text_layout = text_layout.as_ref().unwrap();
 
                 let offset = self.cursor().get_untracked().offset();
-                let cursor_point = text_layout.hit_position(offset).point;
+                let hit_pos = text_layout.hit_position(offset);
+                let cursor_point = hit_pos.point;
+
+                // Debug: log when content has newlines
+                if self.content.contains('\n') {
+                    eprintln!("TextInput layout MULTILINE: offset={}, cursor_point={:?}, content_len={}",
+                        offset, cursor_point, self.content.len());
+                }
+
                 if cursor_point != self.cursor_pos {
                     self.cursor_pos = cursor_point;
                     self.ensure_cursor_visible();
@@ -705,7 +735,8 @@ impl View for TextInput {
 
     fn paint(&mut self, cx: &mut floem::context::PaintCx) {
         cx.save();
-        cx.clip(&self.text_rect.inflate(1.0, 0.0));
+        // Inflate both horizontally and vertically to support multi-line content
+        cx.clip(&self.text_rect.inflate(1.0, 1.0));
         let text_node = self.text_node.unwrap();
         let location = self.id.taffy_layout(text_node).unwrap_or_default().location;
         let point = Point::new(location.x as f64, location.y as f64)
@@ -713,7 +744,6 @@ impl View for TextInput {
 
         self.text_layout.with_untracked(|text_layout| {
             let text_layout = text_layout.as_ref().unwrap();
-            let height = text_layout.size().height;
             let config = self.config.get_untracked();
 
             let cursor = self.cursor().get_untracked();
@@ -721,15 +751,62 @@ impl View for TextInput {
             if let CursorMode::Insert(selection) = &cursor.mode {
                 for region in selection.regions() {
                     if !region.is_caret() {
-                        let min = text_layout.hit_position(region.min()).point.x;
-                        let max = text_layout.hit_position(region.max()).point.x;
-                        cx.fill(
-                            &Rect::ZERO
-                                .with_size(Size::new(max - min, height))
-                                .with_origin(Point::new(min + point.x, point.y)),
-                            config.color(LapceColor::EDITOR_SELECTION),
-                            0.0,
-                        );
+                        let start_pos = text_layout.hit_position(region.min());
+                        let end_pos = text_layout.hit_position(region.max());
+
+                        // Get line height for multi-line selection
+                        let line_height = start_pos.glyph_ascent + start_pos.glyph_descent;
+
+                        // Check if selection spans multiple lines
+                        let start_y = start_pos.point.y;
+                        let end_y = end_pos.point.y;
+
+                        if (start_y - end_y).abs() < 1.0 {
+                            // Single line selection - simple rectangle
+                            let min_x = start_pos.point.x;
+                            let max_x = end_pos.point.x;
+                            cx.fill(
+                                &Rect::ZERO
+                                    .with_size(Size::new(max_x - min_x, line_height))
+                                    .with_origin(Point::new(min_x + point.x, start_y - start_pos.glyph_ascent + point.y)),
+                                config.color(LapceColor::EDITOR_SELECTION),
+                                0.0,
+                            );
+                        } else {
+                            // Multi-line selection - draw rectangles for each line
+                            let text_width = text_layout.size().width;
+
+                            // First line: from start to end of line
+                            cx.fill(
+                                &Rect::ZERO
+                                    .with_size(Size::new(text_width - start_pos.point.x, line_height))
+                                    .with_origin(Point::new(start_pos.point.x + point.x, start_y - start_pos.glyph_ascent + point.y)),
+                                config.color(LapceColor::EDITOR_SELECTION),
+                                0.0,
+                            );
+
+                            // Middle lines: full width (if any)
+                            let mut current_y = start_y + line_height;
+                            while current_y < end_y - 1.0 {
+                                cx.fill(
+                                    &Rect::ZERO
+                                        .with_size(Size::new(text_width, line_height))
+                                        .with_origin(Point::new(point.x, current_y - start_pos.glyph_ascent + point.y)),
+                                    config.color(LapceColor::EDITOR_SELECTION),
+                                    0.0,
+                                );
+                                current_y += line_height;
+                            }
+
+                            // Last line: from start of line to cursor
+                            cx.fill(
+                                &Rect::ZERO
+                                    .with_size(Size::new(end_pos.point.x, line_height))
+                                    .with_origin(Point::new(point.x, end_y - end_pos.glyph_ascent + point.y)),
+                                config.color(LapceColor::EDITOR_SELECTION),
+                                0.0,
+                            );
+                        }
                     }
                 }
             }
@@ -772,19 +849,40 @@ impl View for TextInput {
             {
                 cx.clip(&self.text_rect.inflate(2.0, 2.0));
 
-                let hit_position = text_layout.hit_position(self.offset);
+                // Use cursor signal directly for immediate updates when no preedit
+                // When there's preedit, use self.offset which includes preedit adjustment
+                let draw_offset = if self.preedit_range.is_some() {
+                    self.offset
+                } else {
+                    self.cursor().get_untracked().offset()
+                };
+
+                let safe_offset = draw_offset.min(self.content.len());
+
+                // Debug: log when content has newlines to trace multi-line behavior
+                if self.content.contains('\n') {
+                    let hit_position = text_layout.hit_position(safe_offset);
+                    eprintln!("TextInput paint MULTILINE: content_len={}, offset={}, safe_offset={}, hit_position.point={:?}, content={:?}",
+                        self.content.len(), draw_offset, safe_offset, hit_position.point,
+                        self.content.chars().take(50).collect::<String>());
+                }
+
+                // Calculate cursor position and glyph metrics using cached text_layout
+                let hit_position = text_layout.hit_position(safe_offset);
                 let cursor_point = hit_position.point
                     + self.layout_rect.origin().to_vec2()
                     - self.text_viewport.origin().to_vec2();
+                let glyph_ascent = hit_position.glyph_ascent;
+                let glyph_descent = hit_position.glyph_descent;
 
                 let line = Line::new(
                     Point::new(
                         cursor_point.x,
-                        cursor_point.y - hit_position.glyph_ascent,
+                        cursor_point.y - glyph_ascent,
                     ),
                     Point::new(
                         cursor_point.x,
-                        cursor_point.y + hit_position.glyph_descent,
+                        cursor_point.y + glyph_descent,
                     ),
                 );
 
