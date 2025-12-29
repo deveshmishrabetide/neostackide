@@ -106,16 +106,39 @@ impl LapceAcpClient {
         &self,
         id: String,
     ) -> tokio::sync::oneshot::Receiver<PermissionResponse> {
+        tracing::info!("[ACP Client] register_permission_request: id={}", id);
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.permission_requests.write().insert(id, tx);
+        let pending_count = {
+            let mut requests = self.permission_requests.write();
+            requests.insert(id.clone(), tx);
+            requests.len()
+        };
+        tracing::info!("[ACP Client] register_permission_request: registered, pending_count={}", pending_count);
         rx
     }
 
     /// Respond to a permission request (called from UI)
     pub fn respond_to_permission(&self, id: &str, response: PermissionResponse) {
+        tracing::info!("[ACP Client] respond_to_permission: id={}, approved={}, cancelled={}, selected_option={:?}",
+            id, response.approved, response.cancelled, response.selected_option);
+
+        let pending_before = self.permission_requests.read().len();
+        tracing::info!("[ACP Client] respond_to_permission: pending_requests before remove = {}", pending_before);
+
         if let Some(tx) = self.permission_requests.write().remove(id) {
-            let _ = tx.send(response);
+            tracing::info!("[ACP Client] respond_to_permission: found request, sending response...");
+            match tx.send(response) {
+                Ok(()) => tracing::info!("[ACP Client] respond_to_permission: response sent successfully"),
+                Err(_) => tracing::error!("[ACP Client] respond_to_permission: FAILED to send response - receiver dropped"),
+            }
+        } else {
+            tracing::error!("[ACP Client] respond_to_permission: NO REQUEST FOUND for id={}", id);
+            let pending_ids: Vec<String> = self.permission_requests.read().keys().cloned().collect();
+            tracing::error!("[ACP Client] respond_to_permission: pending request IDs: {:?}", pending_ids);
         }
+
+        let pending_after = self.permission_requests.read().len();
+        tracing::info!("[ACP Client] respond_to_permission: pending_requests after = {}", pending_after);
     }
 }
 
@@ -127,10 +150,13 @@ impl Client for LapceAcpClient {
         &self,
         args: SessionNotification,
     ) -> AcpResult<()> {
+        tracing::info!("[ACP Client] session_notification received: {:?}", std::mem::discriminant(&args.update));
+
         match args.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 // Extract text from content block
                 let text = content_block_to_text(&chunk.content);
+                tracing::debug!("[ACP Client] AgentMessageChunk: {} chars", text.len());
 
                 // Only send TextChunk for streaming display
                 // The UI will accumulate chunks and create a complete Message when done
@@ -138,6 +164,8 @@ impl Client for LapceAcpClient {
             }
 
             SessionUpdate::ToolCall(tool_call) => {
+                tracing::info!("[ACP Client] ToolCall: id={}, title={}",
+                    tool_call.tool_call_id.0, tool_call.title);
                 let input = tool_call.raw_input
                     .as_ref()
                     .and_then(|v| serde_json::to_string_pretty(v).ok());
@@ -150,12 +178,20 @@ impl Client for LapceAcpClient {
             }
 
             SessionUpdate::ToolCallUpdate(update) => {
+                tracing::info!("[ACP Client] ToolCallUpdate: id={}, status={:?}, title={:?}",
+                    update.tool_call_id.0,
+                    update.fields.status,
+                    update.fields.title);
+
                 let success = update.fields.status
                     .map(|s| matches!(s, ToolCallStatus::Completed))
                     .unwrap_or(true);
 
+                tracing::info!("[ACP Client] ToolCallUpdate: computed success={}", success);
+
                 // Extract text from tool content
                 let output = update.fields.content.as_ref().map(|blocks| {
+                    tracing::info!("[ACP Client] ToolCallUpdate: has {} content blocks", blocks.len());
                     blocks.iter().filter_map(|block| {
                         match block {
                             super::ToolCallContent::Content(content) => {
@@ -177,6 +213,11 @@ impl Client for LapceAcpClient {
                     }).collect::<Vec<_>>().join("\n")
                 });
 
+                tracing::info!("[ACP Client] ToolCallUpdate: output has {} chars",
+                    output.as_ref().map(|o| o.len()).unwrap_or(0));
+
+                tracing::info!("[ACP Client] ToolCallUpdate: sending ToolCompleted notification for {}",
+                    update.tool_call_id.0);
                 self.notify(AgentNotification::ToolCompleted {
                     tool_id: update.tool_call_id.0.to_string(),
                     name: update.fields.title.clone().unwrap_or_else(|| update.tool_call_id.0.to_string()),
@@ -368,8 +409,17 @@ impl Client for LapceAcpClient {
         &self,
         args: RequestPermissionRequest,
     ) -> AcpResult<RequestPermissionResponse> {
+        tracing::info!("[ACP Client] request_permission CALLED: tool_call_id={:?}",
+            args.tool_call.tool_call_id);
+        tracing::info!("[ACP Client] request_permission: {} options available", args.options.len());
+        for (i, opt) in args.options.iter().enumerate() {
+            tracing::info!("[ACP Client] request_permission: option[{}]: id={}, name={}, kind={:?}",
+                i, opt.option_id.0, opt.name, opt.kind);
+        }
+
         // Create a unique ID for this request
         let request_id = format!("perm-{}", uuid::Uuid::new_v4());
+        tracing::info!("[ACP Client] request_permission: generated request_id={}", request_id);
 
         // Convert options
         let options: Vec<super::types::PermissionOption> = args
@@ -382,6 +432,7 @@ impl Client for LapceAcpClient {
             })
             .collect();
 
+        tracing::info!("[ACP Client] request_permission: sending PermissionRequest notification to UI");
         // Send permission request to UI
         self.notify(AgentNotification::PermissionRequest(super::types::PermissionRequest {
             id: request_id.clone(),
@@ -389,28 +440,38 @@ impl Client for LapceAcpClient {
             options,
         }));
 
+        tracing::info!("[ACP Client] request_permission: registering permission request and waiting for response...");
         // Wait for response from UI
-        let rx = self.register_permission_request(request_id);
+        let rx = self.register_permission_request(request_id.clone());
 
+        tracing::info!("[ACP Client] request_permission: awaiting oneshot channel for {}...", request_id);
         match rx.await {
             Ok(response) => {
+                tracing::info!("[ACP Client] request_permission: GOT RESPONSE from UI: approved={}, cancelled={}, selected_option={:?}",
+                    response.approved, response.cancelled, response.selected_option);
+
                 let outcome = if response.cancelled {
+                    tracing::info!("[ACP Client] request_permission: outcome = Cancelled (response.cancelled=true)");
                     RequestPermissionOutcome::Cancelled
                 } else if response.approved {
                     // Use the selected option or a default
                     let option_id = response.selected_option
                         .map(|s| PermissionOptionId::new(s))
                         .unwrap_or_else(|| PermissionOptionId::new("allow-once"));
+                    tracing::info!("[ACP Client] request_permission: outcome = Selected({})", option_id.0);
                     RequestPermissionOutcome::Selected(
                         SelectedPermissionOutcome::new(option_id)
                     )
                 } else {
+                    tracing::info!("[ACP Client] request_permission: outcome = Cancelled (not approved)");
                     RequestPermissionOutcome::Cancelled
                 };
+                tracing::info!("[ACP Client] request_permission: returning RequestPermissionResponse");
                 Ok(RequestPermissionResponse::new(outcome))
             }
-            Err(_) => {
+            Err(e) => {
                 // Channel was dropped, treat as cancelled
+                tracing::error!("[ACP Client] request_permission: CHANNEL ERROR: {:?}", e);
                 Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled))
             }
         }

@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossbeam_channel::Sender;
 use parking_lot::RwLock;
@@ -81,181 +82,226 @@ impl AgentRuntime {
     }
 
     /// Run the main loop (call this from a dedicated thread)
+    ///
+    /// This uses a fully async architecture where:
+    /// - RPC messages are polled non-blocking
+    /// - Long-running operations (like prompts) are spawned as async tasks
+    /// - The LocalSet is continuously driven to allow tasks to make progress
+    /// - This enables PermissionResponse messages to be processed while a prompt is running
     pub fn run(self) {
         // Create a tokio runtime for this thread
         let rt = Runtime::new().expect("Failed to create tokio runtime");
-        let local = LocalSet::new();
 
-        // Process RPC commands
-        for msg in self.rpc.rx().iter() {
-            match msg {
-                AgentRpc::Connect { config, workspace_path } => {
-                    tracing::info!("AgentRuntime: Received Connect request for {}", config.command);
-                    let connection = self.connection.clone();
-                    let notification_tx = self.notification_tx.clone();
-                    let client = self.client.clone();
+        // Run everything in the LocalSet
+        rt.block_on(async {
+            let local = LocalSet::new();
+            local.run_until(self.run_async()).await;
+        });
+    }
 
-                    // Run with LocalSet for spawn_local support
-                    local.block_on(&rt, async {
-                        tracing::info!("AgentRuntime: Starting do_connect...");
-                        match Self::do_connect(config, workspace_path, client, None).await {
-                            Ok(result) => {
-                                tracing::info!("AgentRuntime: Connection successful, session_id: {}", result.session_id);
-                                let session_id = result.session_id.clone();
-                                let models = result.models.clone();
-                                let current_model_id = result.current_model_id.clone();
+    /// The main async event loop
+    async fn run_async(self) {
+        tracing::info!("[AgentRuntime] Starting async event loop");
 
-                                *connection.write() = Some(ActiveConnection {
-                                    conn: result.conn,
-                                    session_id: session_id.clone(),
-                                    child: result.child,
-                                });
-
-                                // Send connected notification
-                                let _ = notification_tx.send(AgentNotification::Connected {
-                                    session_id,
-                                });
-
-                                // Send available models notification
-                                if !models.is_empty() {
-                                    let _ = notification_tx.send(AgentNotification::ModelsAvailable {
-                                        models,
-                                        current_model_id,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("AgentRuntime: Connection failed: {}", e);
-                                let _ = notification_tx.send(AgentNotification::Error {
-                                    message: e.to_string(),
-                                });
-                            }
-                        }
-                    });
+        loop {
+            // Try to receive an RPC message with a short timeout
+            // This allows us to also drive spawned tasks
+            match self.rpc.rx().recv_timeout(Duration::from_millis(10)) {
+                Ok(msg) => {
+                    tracing::debug!("[AgentRuntime] Received RPC message");
+                    let should_break = self.handle_rpc_message(msg).await;
+                    if should_break {
+                        tracing::info!("[AgentRuntime] Shutdown requested, breaking loop");
+                        break;
+                    }
                 }
-
-                AgentRpc::ResumeSession { config, workspace_path, agent_session_id } => {
-                    tracing::info!("AgentRuntime: Received ResumeSession request for {} with session {}", config.command, agent_session_id);
-                    let connection = self.connection.clone();
-                    let notification_tx = self.notification_tx.clone();
-                    let client = self.client.clone();
-
-                    // Run with LocalSet for spawn_local support
-                    local.block_on(&rt, async {
-                        tracing::info!("AgentRuntime: Starting do_connect with resume...");
-                        match Self::do_connect(config, workspace_path, client, Some(agent_session_id)).await {
-                            Ok(result) => {
-                                tracing::info!("AgentRuntime: Session resumed, session_id: {}", result.session_id);
-                                let session_id = result.session_id.clone();
-                                let models = result.models.clone();
-                                let current_model_id = result.current_model_id.clone();
-
-                                *connection.write() = Some(ActiveConnection {
-                                    conn: result.conn,
-                                    session_id: session_id.clone(),
-                                    child: result.child,
-                                });
-
-                                // Send connected notification
-                                let _ = notification_tx.send(AgentNotification::Connected {
-                                    session_id,
-                                });
-
-                                // Send available models notification
-                                if !models.is_empty() {
-                                    let _ = notification_tx.send(AgentNotification::ModelsAvailable {
-                                        models,
-                                        current_model_id,
-                                    });
-                                }
-                            }
-                            Err(e) => {
-                                tracing::error!("AgentRuntime: Session resume failed: {}", e);
-                                let _ = notification_tx.send(AgentNotification::Error {
-                                    message: e.to_string(),
-                                });
-                            }
-                        }
-                    });
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    // No message, yield to let spawned tasks make progress
+                    tokio::task::yield_now().await;
                 }
-
-                AgentRpc::Prompt { id, session_id: _, prompt } => {
-                    let connection = self.connection.clone();
-                    let rpc = self.rpc.clone();
-                    let notification_tx = self.notification_tx.clone();
-
-                    local.block_on(&rt, async {
-                        let result = Self::do_prompt(&connection, prompt).await;
-                        match result {
-                            Ok(stop_reason) => {
-                                // Send turn completed notification to flush streaming buffer
-                                let _ = notification_tx.send(AgentNotification::TurnCompleted {
-                                    stop_reason: stop_reason.clone(),
-                                });
-                                rpc.handle_response(id, Ok(AgentResponse::PromptCompleted {
-                                    stop_reason,
-                                }));
-                            }
-                            Err(e) => {
-                                // Also send turn completed on error to flush any partial content
-                                let _ = notification_tx.send(AgentNotification::TurnCompleted {
-                                    stop_reason: None,
-                                });
-                                let _ = notification_tx.send(AgentNotification::Error {
-                                    message: e.clone(),
-                                });
-                                rpc.handle_response(id, Err(e));
-                            }
-                        }
-                    });
-                }
-
-                AgentRpc::Cancel { session_id: _ } => {
-                    let connection = self.connection.clone();
-                    let notification_tx = self.notification_tx.clone();
-
-                    local.block_on(&rt, async {
-                        if let Err(e) = Self::do_cancel(&connection).await {
-                            let _ = notification_tx.send(AgentNotification::Error {
-                                message: e,
-                            });
-                        }
-                    });
-                }
-
-                AgentRpc::SetModel { session_id, model_id } => {
-                    let connection = self.connection.clone();
-                    let notification_tx = self.notification_tx.clone();
-
-                    local.block_on(&rt, async {
-                        match Self::do_set_model(&connection, session_id, model_id.clone()).await {
-                            Ok(()) => {
-                                tracing::info!("Model set to: {}", model_id);
-                            }
-                            Err(e) => {
-                                let _ = notification_tx.send(AgentNotification::Error {
-                                    message: e,
-                                });
-                            }
-                        }
-                    });
-                }
-
-                AgentRpc::PermissionResponse { request_id, response } => {
-                    self.client.respond_to_permission(&request_id, response);
-                }
-
-                AgentRpc::Disconnect => {
-                    *self.connection.write() = None;
-                    let _ = self.notification_tx.send(AgentNotification::Disconnected);
-                }
-
-                AgentRpc::Shutdown => {
-                    *self.connection.write() = None;
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    tracing::info!("[AgentRuntime] RPC channel disconnected, shutting down");
                     break;
                 }
             }
         }
+
+        tracing::info!("[AgentRuntime] Event loop ended");
+    }
+
+    /// Handle a single RPC message. Returns true if we should break the loop.
+    async fn handle_rpc_message(&self, msg: AgentRpc) -> bool {
+        match msg {
+            AgentRpc::Connect { config, workspace_path } => {
+                tracing::info!("[AgentRuntime] Received Connect request for {}", config.command);
+                let connection = self.connection.clone();
+                let notification_tx = self.notification_tx.clone();
+                let client = self.client.clone();
+
+                match Self::do_connect(config, workspace_path, client, None).await {
+                    Ok(result) => {
+                        tracing::info!("[AgentRuntime] Connection successful, session_id: {}", result.session_id);
+                        let session_id = result.session_id.clone();
+                        let models = result.models.clone();
+                        let current_model_id = result.current_model_id.clone();
+
+                        *connection.write() = Some(ActiveConnection {
+                            conn: result.conn,
+                            session_id: session_id.clone(),
+                            child: result.child,
+                        });
+
+                        // Send connected notification
+                        let _ = notification_tx.send(AgentNotification::Connected {
+                            session_id,
+                        });
+
+                        // Send available models notification
+                        if !models.is_empty() {
+                            let _ = notification_tx.send(AgentNotification::ModelsAvailable {
+                                models,
+                                current_model_id,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[AgentRuntime] Connection failed: {}", e);
+                        let _ = notification_tx.send(AgentNotification::Error {
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+
+            AgentRpc::ResumeSession { config, workspace_path, agent_session_id } => {
+                tracing::info!("[AgentRuntime] Received ResumeSession request for {} with session {}", config.command, agent_session_id);
+                let connection = self.connection.clone();
+                let notification_tx = self.notification_tx.clone();
+                let client = self.client.clone();
+
+                match Self::do_connect(config, workspace_path, client, Some(agent_session_id)).await {
+                    Ok(result) => {
+                        tracing::info!("[AgentRuntime] Session resumed, session_id: {}", result.session_id);
+                        let session_id = result.session_id.clone();
+                        let models = result.models.clone();
+                        let current_model_id = result.current_model_id.clone();
+
+                        *connection.write() = Some(ActiveConnection {
+                            conn: result.conn,
+                            session_id: session_id.clone(),
+                            child: result.child,
+                        });
+
+                        // Send connected notification
+                        let _ = notification_tx.send(AgentNotification::Connected {
+                            session_id,
+                        });
+
+                        // Send available models notification
+                        if !models.is_empty() {
+                            let _ = notification_tx.send(AgentNotification::ModelsAvailable {
+                                models,
+                                current_model_id,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("[AgentRuntime] Session resume failed: {}", e);
+                        let _ = notification_tx.send(AgentNotification::Error {
+                            message: e.to_string(),
+                        });
+                    }
+                }
+            }
+
+            AgentRpc::Prompt { id, session_id: _, prompt } => {
+                tracing::info!("[AgentRuntime] Prompt received, spawning async task");
+                let connection = self.connection.clone();
+                let rpc = self.rpc.clone();
+                let notification_tx = self.notification_tx.clone();
+
+                // Spawn as async task so we can continue processing RPC messages
+                // (especially PermissionResponse) while the prompt is running
+                tokio::task::spawn_local(async move {
+                    tracing::info!("[AgentRuntime] Prompt async task started");
+                    let result = Self::do_prompt(&connection, prompt).await;
+                    tracing::info!("[AgentRuntime] Prompt async task: do_prompt returned: {:?}", result.is_ok());
+                    match result {
+                        Ok(stop_reason) => {
+                            // Send turn completed notification to flush streaming buffer
+                            let _ = notification_tx.send(AgentNotification::TurnCompleted {
+                                stop_reason: stop_reason.clone(),
+                            });
+                            rpc.handle_response(id, Ok(AgentResponse::PromptCompleted {
+                                stop_reason,
+                            }));
+                        }
+                        Err(e) => {
+                            // Also send turn completed on error to flush any partial content
+                            let _ = notification_tx.send(AgentNotification::TurnCompleted {
+                                stop_reason: None,
+                            });
+                            let _ = notification_tx.send(AgentNotification::Error {
+                                message: e.clone(),
+                            });
+                            rpc.handle_response(id, Err(e));
+                        }
+                    }
+                    tracing::info!("[AgentRuntime] Prompt async task completed");
+                });
+            }
+
+            AgentRpc::Cancel { session_id: _ } => {
+                tracing::info!("[AgentRuntime] Cancel received");
+                let connection = self.connection.clone();
+                let notification_tx = self.notification_tx.clone();
+
+                if let Err(e) = Self::do_cancel(&connection).await {
+                    let _ = notification_tx.send(AgentNotification::Error {
+                        message: e,
+                    });
+                }
+            }
+
+            AgentRpc::SetModel { session_id, model_id } => {
+                tracing::info!("[AgentRuntime] SetModel received: {}", model_id);
+                let connection = self.connection.clone();
+                let notification_tx = self.notification_tx.clone();
+
+                match Self::do_set_model(&connection, session_id, model_id.clone()).await {
+                    Ok(()) => {
+                        tracing::info!("[AgentRuntime] Model set to: {}", model_id);
+                    }
+                    Err(e) => {
+                        let _ = notification_tx.send(AgentNotification::Error {
+                            message: e,
+                        });
+                    }
+                }
+            }
+
+            AgentRpc::PermissionResponse { request_id, response } => {
+                tracing::info!("[AgentRuntime] PermissionResponse received: request_id={}, approved={}, cancelled={}, selected_option={:?}",
+                    request_id, response.approved, response.cancelled, response.selected_option);
+                tracing::info!("[AgentRuntime] Calling client.respond_to_permission...");
+                self.client.respond_to_permission(&request_id, response);
+                tracing::info!("[AgentRuntime] client.respond_to_permission returned");
+            }
+
+            AgentRpc::Disconnect => {
+                tracing::info!("[AgentRuntime] Disconnect received");
+                *self.connection.write() = None;
+                let _ = self.notification_tx.send(AgentNotification::Disconnected);
+            }
+
+            AgentRpc::Shutdown => {
+                tracing::info!("[AgentRuntime] Shutdown received");
+                *self.connection.write() = None;
+                return true; // Signal to break the loop
+            }
+        }
+
+        false // Continue the loop
     }
 
     async fn do_connect(

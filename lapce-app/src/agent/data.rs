@@ -887,38 +887,62 @@ impl AgentData {
 
     /// Approve a permission request
     pub fn approve_permission(&self, request_id: &str, selected_option: Option<String>) {
-        tracing::info!("Approving permission: {} with option {:?}", request_id, selected_option);
+        tracing::info!("[AgentData] approve_permission CALLED: request_id={}, selected_option={:?}", request_id, selected_option);
+
+        let response = PermissionResponse {
+            approved: true,
+            cancelled: false,
+            selected_option: selected_option.clone(),
+        };
+        tracing::info!("[AgentData] approve_permission: created PermissionResponse: approved={}, cancelled={}, selected_option={:?}",
+            response.approved, response.cancelled, response.selected_option);
+
         // Send response to agent via RPC
+        tracing::info!("[AgentData] approve_permission: calling rpc.respond_permission...");
         self.rpc.respond_permission(
             request_id.to_string(),
-            PermissionResponse {
-                approved: true,
-                cancelled: false,
-                selected_option,
-            },
+            response,
         );
+        tracing::info!("[AgentData] approve_permission: rpc.respond_permission returned");
+
         // Remove from pending
         if let Some(chat_id) = self.current_chat_id.get() {
+            tracing::info!("[AgentData] approve_permission: removing from pending for chat {}", chat_id);
             self.remove_permission_request(&chat_id, request_id);
+        } else {
+            tracing::warn!("[AgentData] approve_permission: no current chat_id, cannot remove from pending");
         }
+        tracing::info!("[AgentData] approve_permission: DONE");
     }
 
     /// Deny/cancel a permission request
     pub fn deny_permission(&self, request_id: &str) {
-        tracing::info!("Denying permission: {}", request_id);
+        tracing::info!("[AgentData] deny_permission CALLED: request_id={}", request_id);
+
+        let response = PermissionResponse {
+            approved: false,
+            cancelled: true,
+            selected_option: None,
+        };
+        tracing::info!("[AgentData] deny_permission: created PermissionResponse: approved={}, cancelled={}, selected_option={:?}",
+            response.approved, response.cancelled, response.selected_option);
+
         // Send response to agent via RPC
+        tracing::info!("[AgentData] deny_permission: calling rpc.respond_permission...");
         self.rpc.respond_permission(
             request_id.to_string(),
-            PermissionResponse {
-                approved: false,
-                cancelled: true,
-                selected_option: None,
-            },
+            response,
         );
+        tracing::info!("[AgentData] deny_permission: rpc.respond_permission returned");
+
         // Remove from pending
         if let Some(chat_id) = self.current_chat_id.get() {
+            tracing::info!("[AgentData] deny_permission: removing from pending for chat {}", chat_id);
             self.remove_permission_request(&chat_id, request_id);
+        } else {
+            tracing::warn!("[AgentData] deny_permission: no current chat_id, cannot remove from pending");
         }
+        tracing::info!("[AgentData] deny_permission: DONE");
     }
 
     /// Set error message
@@ -1033,16 +1057,30 @@ impl AgentData {
                 }
             }
             AgentNotification::ToolCompleted { tool_id, name: _, success, output } => {
-                tracing::info!("ToolCompleted: {} success={}", tool_id, success);
+                tracing::info!("[AgentData] ToolCompleted RECEIVED: tool_id={}, success={}, output_len={}",
+                    tool_id, success, output.as_ref().map(|o| o.len()).unwrap_or(0));
                 if let Some(ref chat_id) = chat_id {
+                    tracing::info!("[AgentData] ToolCompleted: updating tool result for chat {}", chat_id);
                     // Update the existing tool call with its result (merged display)
                     self.update_tool_result(chat_id, &tool_id, success, output);
+                    tracing::info!("[AgentData] ToolCompleted: update_tool_result returned for {}", tool_id);
+                } else {
+                    tracing::warn!("[AgentData] ToolCompleted: no current chat_id, cannot update tool result");
                 }
             }
             AgentNotification::PermissionRequest(request) => {
-                tracing::info!("PermissionRequest: {}", request.id);
+                tracing::info!("[AgentData] PermissionRequest RECEIVED: id={}, description={}, options={}",
+                    request.id, request.description, request.options.len());
+                for (i, opt) in request.options.iter().enumerate() {
+                    tracing::info!("[AgentData] PermissionRequest: option[{}]: id={}, label={}, recommended={}",
+                        i, opt.id, opt.label, opt.recommended);
+                }
                 if let Some(ref chat_id) = chat_id {
+                    tracing::info!("[AgentData] PermissionRequest: adding to chat {}", chat_id);
                     self.add_permission_request(chat_id, request);
+                    tracing::info!("[AgentData] PermissionRequest: added to pending");
+                } else {
+                    tracing::warn!("[AgentData] PermissionRequest: no current chat_id, cannot add to pending");
                 }
             }
             AgentNotification::TurnCompleted { stop_reason } => {

@@ -195,10 +195,18 @@ impl AgentRpcHandler {
 
     /// Respond to a permission request
     pub fn respond_permission(&self, request_id: String, response: PermissionResponse) {
-        let _ = self.tx.send(AgentRpc::PermissionResponse {
-            request_id,
+        tracing::info!("[AgentRpcHandler] respond_permission: request_id={}, approved={}, cancelled={}, selected_option={:?}",
+            request_id, response.approved, response.cancelled, response.selected_option);
+
+        let result = self.tx.send(AgentRpc::PermissionResponse {
+            request_id: request_id.clone(),
             response,
         });
+
+        match result {
+            Ok(()) => tracing::info!("[AgentRpcHandler] respond_permission: message sent to channel successfully"),
+            Err(e) => tracing::error!("[AgentRpcHandler] respond_permission: FAILED to send to channel: {:?}", e),
+        }
     }
 
     /// Disconnect from the agent
