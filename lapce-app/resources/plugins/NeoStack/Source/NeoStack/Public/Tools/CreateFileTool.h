@@ -33,7 +33,7 @@
 class NEOSTACK_API FCreateFileTool : public FNeoStackToolBase
 {
 public:
-	virtual FString GetName() const override { return TEXT("create_file"); }
+	virtual FString GetName() const override { return TEXT("create_asset"); }
 	virtual FString GetDescription() const override
 	{
 		return TEXT("Create a file or asset. Use parent='Text' for text files, asset type name for non-Blueprints (e.g., 'BehaviorTree', 'Material', 'Struct', 'Enum'), 'Widget' for Widget Blueprints, or a UE class name for Blueprints (e.g., 'Actor', 'Character').");

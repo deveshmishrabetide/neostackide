@@ -32,7 +32,7 @@ class UDataTable;
 class NEOSTACK_API FReadFileTool : public FNeoStackToolBase
 {
 public:
-	virtual FString GetName() const override { return TEXT("read_file"); }
+	virtual FString GetName() const override { return TEXT("read_asset"); }
 	virtual FString GetDescription() const override
 	{
 		return TEXT("Read a file or asset from the project");

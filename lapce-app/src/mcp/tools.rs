@@ -337,6 +337,260 @@ pub fn get_all_tools() -> Vec<McpTool> {
                 "required": ["asset"]
             }),
         },
+        McpTool {
+            name: "configure_asset".to_string(),
+            description: "Read and configure properties on any UE5 asset using reflection. Supports Materials, Blueprints, Widgets, and their subobjects (components, child widgets).".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Asset name (e.g., 'M_BaseMaterial', 'BP_Enemy', 'WBP_MainMenu')."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Asset path (e.g., '/Game/Materials'). Default: /Game."
+                    },
+                    "subobject": {
+                        "type": "string",
+                        "description": "Target a specific subobject (widget name in Widget BP, component name in BP)."
+                    },
+                    "list_properties": {
+                        "type": "boolean",
+                        "description": "List all editable properties on the asset/subobject."
+                    },
+                    "get": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Property names to read values from."
+                    },
+                    "changes": {
+                        "type": "array",
+                        "description": "Property changes to apply.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "property": { "type": "string", "description": "Property name." },
+                                "value": { "type": "string", "description": "New value (use UE format: 'BLEND_Translucent', 'True', '(X=1,Y=2,Z=3)')." }
+                            },
+                            "required": ["property", "value"]
+                        }
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        McpTool {
+            name: "edit_behavior_tree".to_string(),
+            description: "Edit Behavior Trees and Blackboards. Add/remove composite nodes, tasks, decorators, services, and blackboard keys.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Asset name (e.g., 'BT_EnemyAI', 'BB_EnemyData')."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Asset path (e.g., '/Game/AI'). Default: /Game."
+                    },
+                    "set_blackboard": {
+                        "type": "string",
+                        "description": "Set the blackboard asset for a behavior tree."
+                    },
+                    "add_composite": {
+                        "type": "array",
+                        "description": "Composite nodes to add (Selector, Sequence, Parallel).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "description": "Selector, Sequence, Parallel, SimpleParallel." },
+                                "name": { "type": "string" },
+                                "parent": { "type": "string", "description": "Parent composite name (empty = root)." },
+                                "index": { "type": "integer", "description": "Child index (-1 = append)." }
+                            },
+                            "required": ["type"]
+                        }
+                    },
+                    "add_task": {
+                        "type": "array",
+                        "description": "Task nodes to add.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "description": "Task class (MoveTo, Wait, RunBehavior, etc.)." },
+                                "name": { "type": "string" },
+                                "parent": { "type": "string", "description": "Parent composite name." },
+                                "index": { "type": "integer" }
+                            },
+                            "required": ["type", "parent"]
+                        }
+                    },
+                    "add_decorator": {
+                        "type": "array",
+                        "description": "Decorators to add to nodes.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "description": "Decorator class (Blackboard, CoolDown, Loop, etc.)." },
+                                "name": { "type": "string" },
+                                "target": { "type": "string", "description": "Target node name to attach to." }
+                            },
+                            "required": ["type", "target"]
+                        }
+                    },
+                    "add_service": {
+                        "type": "array",
+                        "description": "Services to add to composites.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "description": "Service class (DefaultFocus, RunEQS, etc.)." },
+                                "name": { "type": "string" },
+                                "target": { "type": "string", "description": "Target composite name." }
+                            },
+                            "required": ["type", "target"]
+                        }
+                    },
+                    "remove_node": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Node names to remove."
+                    },
+                    "add_key": {
+                        "type": "array",
+                        "description": "Blackboard keys to add.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "type": { "type": "string", "description": "Bool, Int, Float, String, Name, Vector, Rotator, Object, Class, Enum." },
+                                "base_class": { "type": "string", "description": "For Object/Class types." },
+                                "category": { "type": "string" },
+                                "instance_synced": { "type": "boolean" }
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                    "remove_key": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Blackboard key names to remove."
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        McpTool {
+            name: "edit_data_structure".to_string(),
+            description: "Edit User Defined Structs, Enums, and DataTables. Add/remove/modify fields, values, and rows.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Asset name (e.g., 'S_PlayerData', 'E_GameState', 'DT_Items')."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Asset path. Default: /Game."
+                    },
+                    "add_fields": {
+                        "type": "array",
+                        "description": "Struct fields to add.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "type": { "type": "string", "description": "Boolean, Integer, Float, String, Vector, Rotator, Transform, Object, etc." },
+                                "default_value": { "type": "string" },
+                                "description": { "type": "string" }
+                            },
+                            "required": ["name", "type"]
+                        }
+                    },
+                    "remove_fields": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Struct field names to remove."
+                    },
+                    "modify_fields": {
+                        "type": "array",
+                        "description": "Struct fields to modify.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Current field name." },
+                                "new_name": { "type": "string" },
+                                "type": { "type": "string" },
+                                "default_value": { "type": "string" },
+                                "description": { "type": "string" }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "add_values": {
+                        "type": "array",
+                        "description": "Enum values to add.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "display_name": { "type": "string" }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "remove_values": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Enum value names to remove."
+                    },
+                    "modify_values": {
+                        "type": "array",
+                        "description": "Enum values to modify.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "index": { "type": "integer" },
+                                "display_name": { "type": "string" }
+                            },
+                            "required": ["index"]
+                        }
+                    },
+                    "add_rows": {
+                        "type": "array",
+                        "description": "DataTable rows to add.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "row_name": { "type": "string" },
+                                "values": { "type": "object", "description": "Column name -> value mapping." }
+                            },
+                            "required": ["row_name", "values"]
+                        }
+                    },
+                    "remove_rows": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "DataTable row names to remove."
+                    },
+                    "modify_rows": {
+                        "type": "array",
+                        "description": "DataTable rows to modify.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "row_name": { "type": "string" },
+                                "values": { "type": "object" }
+                            },
+                            "required": ["row_name", "values"]
+                        }
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
     ]
 }
 

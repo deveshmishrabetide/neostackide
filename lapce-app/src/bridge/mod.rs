@@ -61,6 +61,8 @@ pub use types::{
 };
 
 pub use view::{
+    BridgePopoverData,
+    bridge_popover_box,
     bridge_status_indicator,
     plugin_banner,
     simple_bridge_indicator,

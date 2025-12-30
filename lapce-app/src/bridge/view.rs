@@ -3,20 +3,237 @@
 //! This module provides the visual components for Unreal Engine bridge integration:
 //! - Status bar indicator showing connection status
 //! - Plugin installation banner for prompting users to install/update
+//! - Root-level popover for connection details and plugin actions
 
+use std::rc::Rc;
 use std::sync::Arc;
 
 use floem::{
     View,
     event::EventListener,
-    reactive::{ReadSignal, RwSignal, SignalGet, SignalUpdate, SignalWith, create_memo},
+    reactive::{ReadSignal, RwSignal, Scope, SignalGet, SignalUpdate, SignalWith, create_memo},
     style::{AlignItems, CursorStyle, Display, Position},
     views::{Decorators, container, empty, label, stack, svg},
 };
 
 use crate::config::{LapceConfig, color::LapceColor, icon::LapceIcons};
+use crate::window_tab::CommonData;
 
 use super::types::{BridgeStatus, PluginStatus, UEClient};
+
+/// Data for the bridge connection popover (rendered at app root level)
+#[derive(Clone)]
+pub struct BridgePopoverData {
+    pub active: RwSignal<bool>,
+    pub bridge_status: RwSignal<BridgeStatus>,
+    pub bridge_clients: RwSignal<Vec<UEClient>>,
+    pub plugin_status: RwSignal<PluginStatus>,
+    pub on_install: RwSignal<Option<Rc<dyn Fn()>>>,
+    pub config: ReadSignal<Arc<LapceConfig>>,
+}
+
+impl BridgePopoverData {
+    pub fn new(
+        cx: Scope,
+        common: Rc<CommonData>,
+        bridge_status: RwSignal<BridgeStatus>,
+        bridge_clients: RwSignal<Vec<UEClient>>,
+        plugin_status: RwSignal<PluginStatus>,
+    ) -> Self {
+        Self {
+            active: cx.create_rw_signal(false),
+            bridge_status,
+            bridge_clients,
+            plugin_status,
+            on_install: cx.create_rw_signal(None),
+            config: common.config,
+        }
+    }
+
+    /// Set the install callback (called after WindowTabData is created)
+    pub fn set_on_install(&self, callback: impl Fn() + 'static) {
+        self.on_install.set(Some(Rc::new(callback)));
+    }
+}
+
+/// Root-level popover for bridge connection details (like alert_box)
+///
+/// This is rendered at the app root level to ensure click events work properly.
+pub fn bridge_popover_box(data: BridgePopoverData) -> impl View {
+    let config = data.config;
+    let active = data.active;
+    let bridge_status = data.bridge_status;
+    let bridge_clients = data.bridge_clients;
+    let plugin_status = data.plugin_status;
+    let on_install = data.on_install;
+
+    let is_connected = create_memo(move |_| {
+        bridge_status.get() == BridgeStatus::Connected
+    });
+
+    container({
+        container({
+            stack((
+                // Header with status icon and message
+                stack((
+                    // Status icon
+                    svg(move || {
+                        if is_connected.get() {
+                            config.get().ui_svg(LapceIcons::DEBUG_CONTINUE)
+                        } else {
+                            config.get().ui_svg(LapceIcons::DEBUG_DISCONNECT)
+                        }
+                    }).style(move |s| {
+                        let config = config.get();
+                        let color = if is_connected.get() {
+                            config.color(LapceColor::TERMINAL_GREEN)
+                        } else {
+                            config.color(LapceColor::EDITOR_DIM)
+                        };
+                        let size = config.ui.icon_size() as f32 + 4.0;
+                        s.size(size, size)
+                            .color(color)
+                            .margin_right(10.0)
+                    }),
+                    // Status title
+                    label(move || {
+                        match bridge_status.get() {
+                            BridgeStatus::Connected => {
+                                let count = bridge_clients.with(|c| c.len());
+                                if count > 1 {
+                                    format!("Connected to {} Unreal Editors", count)
+                                } else {
+                                    "Connected to Unreal Editor".to_string()
+                                }
+                            }
+                            BridgeStatus::Listening => "Waiting for Unreal Editor".to_string(),
+                            BridgeStatus::Stopped => "Bridge Not Running".to_string(),
+                        }
+                    }).style(move |s| {
+                        s.font_bold()
+                            .color(config.get().color(LapceColor::EDITOR_FOREGROUND))
+                    }),
+                ))
+                .style(|s| s.align_items(Some(AlignItems::Center))),
+
+                // Description/action area
+                container(
+                    label(move || {
+                        match (bridge_status.get(), plugin_status.get()) {
+                            (BridgeStatus::Connected, _) => {
+                                "Real-time sync and AI features are active.".to_string()
+                            }
+                            (_, PluginStatus::NotInstalled) => {
+                                "Install the NeoStack plugin to enable UE integration.".to_string()
+                            }
+                            (_, PluginStatus::UpdateAvailable { installed_version, bundled_version }) => {
+                                format!("Update available: v{} -> v{}", installed_version, bundled_version)
+                            }
+                            _ => {
+                                "Open your project in Unreal Editor to connect.".to_string()
+                            }
+                        }
+                    }).style(move |s| {
+                        s.color(config.get().color(LapceColor::EDITOR_DIM))
+                    })
+                )
+                .style(|s| s.margin_top(8.0)),
+
+                // Install/Update button (if needed)
+                label(move || {
+                    match plugin_status.get() {
+                        PluginStatus::NotInstalled => "Install Plugin".to_string(),
+                        PluginStatus::UpdateAvailable { .. } => "Update Plugin".to_string(),
+                        _ => String::new(),
+                    }
+                })
+                .on_click_stop(move |_| {
+                    tracing::info!("Install Plugin button clicked (bridge popover)");
+                    if let Some(callback) = on_install.get() {
+                        callback();
+                    }
+                    active.set(false);
+                })
+                .style(move |s| {
+                    let show_button = matches!(
+                        plugin_status.get(),
+                        PluginStatus::NotInstalled | PluginStatus::UpdateAvailable { .. }
+                    );
+                    let config = config.get();
+
+                    s.display(if show_button { Display::Flex } else { Display::None })
+                        .margin_top(12.0)
+                        .padding_horiz(16.0)
+                        .padding_vert(6.0)
+                        .border_radius(4.0)
+                        .justify_center()
+                        .background(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_BACKGROUND))
+                        .color(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_FOREGROUND))
+                        .cursor(CursorStyle::Pointer)
+                        .hover(|s| {
+                            s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
+                        })
+                        .active(|s| {
+                            s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND).multiply_alpha(0.8))
+                        })
+                }),
+
+                // Close button
+                label(|| "Close".to_string())
+                    .on_click_stop(move |_| {
+                        active.set(false);
+                    })
+                    .style(move |s| {
+                        let config = config.get();
+                        s.margin_top(8.0)
+                            .width_pct(100.0)
+                            .justify_center()
+                            .line_height(1.5)
+                            .border(1.0)
+                            .border_radius(6.0)
+                            .border_color(config.color(LapceColor::LAPCE_BORDER))
+                            .cursor(CursorStyle::Pointer)
+                            .hover(|s| {
+                                s.background(config.color(LapceColor::PANEL_HOVERED_BACKGROUND))
+                            })
+                            .active(|s| {
+                                s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
+                            })
+                    }),
+            ))
+            .style(|s| s.flex_col().items_center().width_pct(100.0))
+        })
+        .on_event_stop(EventListener::PointerDown, |_| {})
+        .style(move |s| {
+            let config = config.get();
+            s.padding(20.0)
+                .width(300.0)
+                .border(1.0)
+                .border_radius(8.0)
+                .border_color(config.color(LapceColor::LAPCE_BORDER))
+                .color(config.color(LapceColor::EDITOR_FOREGROUND))
+                .background(config.color(LapceColor::PANEL_BACKGROUND))
+        })
+    })
+    .on_event_stop(EventListener::PointerDown, move |_| {
+        // Click on backdrop closes the popover
+        active.set(false);
+    })
+    .style(move |s| {
+        s.absolute()
+            .size_pct(100.0, 100.0)
+            .items_center()
+            .justify_center()
+            .apply_if(!active.get(), |s| s.hide())
+            .background(
+                config
+                    .get()
+                    .color(LapceColor::LAPCE_DROPDOWN_SHADOW)
+                    .multiply_alpha(0.5),
+            )
+    })
+    .debug_name("Bridge Popover Box")
+}
 
 /// Status bar indicator for UE bridge connection
 ///
@@ -26,11 +243,8 @@ pub fn bridge_status_indicator(
     config: ReadSignal<Arc<LapceConfig>>,
     bridge_status: RwSignal<BridgeStatus>,
     bridge_clients: RwSignal<Vec<UEClient>>,
-    plugin_status: RwSignal<PluginStatus>,
-    on_install_plugin: impl Fn() + 'static + Clone,
+    popover_active: RwSignal<bool>,
 ) -> impl View {
-    let popover_visible = floem::reactive::create_rw_signal(false);
-
     let is_connected = create_memo(move |_| {
         bridge_status.get() == BridgeStatus::Connected
     });
@@ -54,195 +268,38 @@ pub fn bridge_status_indicator(
         }
     });
 
-    let on_install = on_install_plugin.clone();
-
     stack((
-        // Main indicator button
-        stack((
-            // Status dot
-            empty().style(move |s| {
-                let config = config.get();
-                let color = if is_connected.get() {
-                    config.color(LapceColor::TERMINAL_GREEN)
-                } else {
-                    config.color(LapceColor::EDITOR_DIM)
-                };
-                s.size(8.0, 8.0)
-                    .border_radius(4.0)
-                    .background(color)
-                    .margin_right(6.0)
-            }),
-            // Status text
-            label(move || status_text.get()).style(move |s| {
-                s.color(config.get().color(LapceColor::STATUS_FOREGROUND))
-                    .selectable(false)
-            }),
-        ))
-        .on_click_stop(move |_| {
-            popover_visible.update(|v| *v = !*v);
-        })
-        .style(move |s| {
-            s.height_pct(100.0)
-                .padding_horiz(10.0)
-                .align_items(Some(AlignItems::Center))
-                .cursor(CursorStyle::Pointer)
-                .hover(|s| {
-                    s.background(config.get().color(LapceColor::PANEL_HOVERED_BACKGROUND))
-                })
+        // Status dot
+        empty().style(move |s| {
+            let config = config.get();
+            let color = if is_connected.get() {
+                config.color(LapceColor::TERMINAL_GREEN)
+            } else {
+                config.color(LapceColor::EDITOR_DIM)
+            };
+            s.size(8.0, 8.0)
+                .border_radius(4.0)
+                .background(color)
+                .margin_right(6.0)
         }),
-        // Popover
-        connection_popover(
-            config,
-            bridge_status,
-            bridge_clients,
-            plugin_status,
-            popover_visible,
-            on_install,
-        ),
+        // Status text
+        label(move || status_text.get()).style(move |s| {
+            s.color(config.get().color(LapceColor::STATUS_FOREGROUND))
+                .selectable(false)
+        }),
     ))
-    .style(|s| s.position(Position::Relative))
-}
-
-/// Connection details popover
-fn connection_popover(
-    config: ReadSignal<Arc<LapceConfig>>,
-    bridge_status: RwSignal<BridgeStatus>,
-    bridge_clients: RwSignal<Vec<UEClient>>,
-    plugin_status: RwSignal<PluginStatus>,
-    visible: RwSignal<bool>,
-    on_install_plugin: impl Fn() + 'static + Clone,
-) -> impl View {
-    let is_connected = create_memo(move |_| {
-        bridge_status.get() == BridgeStatus::Connected
-    });
-
-    let on_install = on_install_plugin.clone();
-
-    container(
-        stack((
-            // Header with status icon and message
-            stack((
-                // Status icon
-                svg(move || {
-                    if is_connected.get() {
-                        config.get().ui_svg(LapceIcons::DEBUG_CONTINUE)
-                    } else {
-                        config.get().ui_svg(LapceIcons::DEBUG_DISCONNECT)
-                    }
-                }).style(move |s| {
-                    let config = config.get();
-                    let color = if is_connected.get() {
-                        config.color(LapceColor::TERMINAL_GREEN)
-                    } else {
-                        config.color(LapceColor::EDITOR_DIM)
-                    };
-                    let size = config.ui.icon_size() as f32 + 4.0;
-                    s.size(size, size)
-                        .color(color)
-                        .margin_right(10.0)
-                }),
-                // Status title
-                label(move || {
-                    match bridge_status.get() {
-                        BridgeStatus::Connected => {
-                            let count = bridge_clients.with(|c| c.len());
-                            if count > 1 {
-                                format!("Connected to {} Unreal Editors", count)
-                            } else {
-                                "Connected to Unreal Editor".to_string()
-                            }
-                        }
-                        BridgeStatus::Listening => "Waiting for Unreal Editor".to_string(),
-                        BridgeStatus::Stopped => "Bridge Not Running".to_string(),
-                    }
-                }).style(move |s| {
-                    s.font_bold()
-                        .color(config.get().color(LapceColor::EDITOR_FOREGROUND))
-                }),
-            ))
-            .style(|s| s.align_items(Some(AlignItems::Center))),
-
-            // Description/action area
-            container(
-                label(move || {
-                    match (bridge_status.get(), plugin_status.get()) {
-                        (BridgeStatus::Connected, _) => {
-                            "Real-time sync and AI features are active.".to_string()
-                        }
-                        (_, PluginStatus::NotInstalled) => {
-                            "Install the NeoStack plugin to enable UE integration.".to_string()
-                        }
-                        (_, PluginStatus::UpdateAvailable { installed_version, bundled_version }) => {
-                            format!("Update available: v{} -> v{}", installed_version, bundled_version)
-                        }
-                        _ => {
-                            "Open your project in Unreal Editor to connect.".to_string()
-                        }
-                    }
-                }).style(move |s| {
-                    s.color(config.get().color(LapceColor::EDITOR_DIM))
-                })
-            )
-            .style(|s| s.margin_top(8.0)),
-
-            // Install/Update button (if needed)
-            {
-                let on_install = on_install.clone();
-                let visible_memo = visible;
-                container(
-                    label(move || {
-                        match plugin_status.get() {
-                            PluginStatus::NotInstalled => "Install Plugin".to_string(),
-                            PluginStatus::UpdateAvailable { .. } => "Update Plugin".to_string(),
-                            _ => String::new(),
-                        }
-                    })
-                )
-                .on_click_stop(move |_| {
-                    on_install();
-                    visible_memo.set(false);
-                })
-                .style(move |s| {
-                    let show_button = matches!(
-                        plugin_status.get(),
-                        PluginStatus::NotInstalled | PluginStatus::UpdateAvailable { .. }
-                    );
-                    let config = config.get();
-
-                    s.display(if show_button { Display::Flex } else { Display::None })
-                        .margin_top(12.0)
-                        .padding_horiz(16.0)
-                        .padding_vert(6.0)
-                        .border_radius(4.0)
-                        .background(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_BACKGROUND))
-                        .color(config.color(LapceColor::LAPCE_BUTTON_PRIMARY_FOREGROUND))
-                        .cursor(CursorStyle::Pointer)
-                        .hover(|s| {
-                            s.background(config.color(LapceColor::PANEL_HOVERED_ACTIVE_BACKGROUND))
-                        })
-                })
-            },
-        ))
-        .style(|s| s.flex_col())
-    )
-    .on_event_stop(EventListener::PointerDown, |_| {
-        // Prevent click from propagating
+    .on_click_stop(move |_| {
+        tracing::info!("Bridge status indicator clicked, opening popover");
+        popover_active.set(true);
     })
     .style(move |s| {
-        let config = config.get();
-        s.display(if visible.get() { Display::Flex } else { Display::None })
-            .position(Position::Absolute)
-            .inset_bottom(30.0)
-            .inset_left(-10.0)
-            .padding(16.0)
-            .min_width(280.0)
-            .border(1.0)
-            .border_radius(8.0)
-            .border_color(config.color(LapceColor::LAPCE_BORDER))
-            .background(config.color(LapceColor::PANEL_BACKGROUND))
-            .box_shadow_blur(8.0)
-            .box_shadow_color(config.color(LapceColor::LAPCE_DROPDOWN_SHADOW))
-            .z_index(100)
+        s.height_pct(100.0)
+            .padding_horiz(10.0)
+            .align_items(Some(AlignItems::Center))
+            .cursor(CursorStyle::Pointer)
+            .hover(|s| {
+                s.background(config.get().color(LapceColor::PANEL_HOVERED_BACKGROUND))
+            })
     })
 }
 
@@ -367,6 +424,7 @@ pub fn plugin_banner(
                     .style(|s| s.align_items(Some(AlignItems::Center)))
                 )
                 .on_click_stop(move |_| {
+                    tracing::info!("Install Plugin button clicked (banner)");
                     on_install();
                 })
                 .style(move |s| {

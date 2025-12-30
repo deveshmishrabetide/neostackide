@@ -51,7 +51,7 @@ use lsp_types::{
 
 use crate::acp::{AgentStatus, AgentMessage, AgentConnection};
 use crate::bridge::{
-    BridgeRpcHandler, BridgeStatus, BridgeNotification, PluginStatus, UEClient,
+    BridgePopoverData, BridgeRpcHandler, BridgeStatus, BridgeNotification, PluginStatus, UEClient,
     start_bridge_runtime, is_unreal_project, check_plugin_version, install_plugin,
 };
 use crate::mcp::{start_mcp_server, McpNotification};
@@ -196,6 +196,7 @@ pub struct WindowTabData {
     pub call_hierarchy_data: CallHierarchyData,
     pub about_data: AboutData,
     pub alert_data: AlertBoxData,
+    pub bridge_popover_data: BridgePopoverData,
     pub layout_rect: RwSignal<Rect>,
     pub title_height: RwSignal<f64>,
     pub status_height: RwSignal<f64>,
@@ -606,6 +607,15 @@ impl WindowTabData {
         let show_plugin_banner = cx.create_rw_signal(true);
         let mcp_port: RwSignal<Option<u16>> = cx.create_rw_signal(None);
 
+        // Create bridge popover data (rendered at app root level)
+        let bridge_popover_data = BridgePopoverData::new(
+            cx,
+            common.clone(),
+            bridge_status,
+            bridge_clients,
+            plugin_status,
+        );
+
         // Start bridge runtime in background thread
         let (bridge_notification_tx, bridge_notification_rx) = crossbeam_channel::unbounded();
         start_bridge_runtime(bridge_rpc.clone(), bridge_notification_tx);
@@ -784,6 +794,7 @@ impl WindowTabData {
             },
             about_data,
             alert_data,
+            bridge_popover_data,
             layout_rect: cx.create_rw_signal(Rect::ZERO),
             title_height,
             status_height,
@@ -820,6 +831,14 @@ impl WindowTabData {
             show_plugin_banner,
             mcp_port,
         };
+
+        // Set up the bridge popover install callback
+        {
+            let window_tab_data_clone = window_tab_data.clone();
+            window_tab_data.bridge_popover_data.set_on_install(move || {
+                window_tab_data_clone.install_ue_plugin();
+            });
+        }
 
         {
             let focus = window_tab_data.common.focus;
@@ -2326,6 +2345,9 @@ impl WindowTabData {
             InternalCommand::CallHierarchyIncoming { item_id } => {
                 self.call_hierarchy_incoming(item_id);
             }
+            InternalCommand::ShowMessage { title, message } => {
+                self.show_message(&title, &message);
+            }
         }
     }
 
@@ -2511,6 +2533,25 @@ impl WindowTabData {
             }
             CoreNotification::VoltInstalled { volt, icon } => {
                 self.plugin.volt_installed(volt, icon);
+            }
+            CoreNotification::VoltInstalling { volt, error } => {
+                self.plugin.volt_install_failed(volt, error);
+                self.show_message(
+                    "Plugin Installation Failed",
+                    &lsp_types::ShowMessageParams {
+                        typ: lsp_types::MessageType::ERROR,
+                        message: error.clone(),
+                    },
+                );
+            }
+            CoreNotification::VoltRemoving { error, .. } => {
+                self.show_message(
+                    "Plugin Removal Failed",
+                    &lsp_types::ShowMessageParams {
+                        typ: lsp_types::MessageType::ERROR,
+                        message: error.clone(),
+                    },
+                );
             }
             CoreNotification::VoltRemoved { volt, .. } => {
                 self.plugin.volt_removed(volt);

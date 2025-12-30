@@ -797,6 +797,10 @@ pub enum InternalCommand {
     RestartTerminal {
         term_id: TermId,
     },
+    ShowMessage {
+        title: String,
+        message: lsp_types::ShowMessageParams,
+    },
 }
 
 #[derive(Clone)]

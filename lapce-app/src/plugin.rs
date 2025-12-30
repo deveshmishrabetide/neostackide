@@ -334,6 +334,21 @@ impl PluginData {
         }
     }
 
+    pub fn volt_install_failed(&self, volt: &VoltInfo, _error: &str) {
+        let id = volt.id();
+        // Reset the installing state so the user can try again
+        self.available.volts.with_untracked(|volts| {
+            if let Some(volt_data) = volts.get(&id) {
+                volt_data.installing.set(false);
+            }
+        });
+        self.all.with_untracked(|all| {
+            if let Some(volt_data) = all.get(&id) {
+                volt_data.installing.set(false);
+            }
+        });
+    }
+
     fn load_available_volts(
         &self,
         query: &str,
@@ -361,6 +376,7 @@ impl PluginData {
 
                 match new {
                     Ok(new) => {
+                        tracing::info!("Loaded {} available plugins", new.plugins.len());
                         volts.update(|volts| {
                             volts.extend(new.plugins.into_iter().map(|volt| {
                                 let icon = cx.create_rw_signal(None);
@@ -392,7 +408,7 @@ impl PluginData {
                         volts_total.set(new.total);
                     }
                     Err(err) => {
-                        tracing::error!("{:?}", err);
+                        tracing::error!("Failed to load available plugins: {:?}", err);
                         core_rpc.notification(CoreNotification::ShowMessage {
                             title: "Request Available Plugins".to_string(),
                             message: lsp_types::ShowMessageParams {
@@ -496,20 +512,41 @@ impl PluginData {
     }
 
     pub fn install_volt(&self, info: VoltInfo) {
+        tracing::info!("install_volt called for: {} by {}", info.name, info.author);
         self.available.volts.with_untracked(|volts| {
             if let Some(volt) = volts.get(&info.id()) {
                 volt.installing.set(true);
             };
         });
         if info.wasm {
+            tracing::info!("Installing WASM plugin via proxy");
             self.common.proxy.install_volt(info);
         } else {
             let plugin = self.clone();
-            let send = create_ext_action(self.common.scope, move |result| {
-                if let Ok((meta, icon)) = result {
-                    plugin.volt_installed(&meta, &icon);
-                }
-            });
+            let info_clone = info.clone();
+            let send = create_ext_action(
+                self.common.scope,
+                move |result: Result<(VoltMetadata, Option<Vec<u8>>)>| {
+                    match result {
+                        Ok((meta, icon)) => {
+                            plugin.volt_installed(&meta, &icon);
+                        }
+                        Err(err) => {
+                            let error_msg = err.to_string();
+                            plugin.volt_install_failed(&info_clone, &error_msg);
+                            plugin.common.internal_command.send(
+                                crate::command::InternalCommand::ShowMessage {
+                                    title: "Plugin Installation Failed".to_string(),
+                                    message: lsp_types::ShowMessageParams {
+                                        typ: lsp_types::MessageType::ERROR,
+                                        message: error_msg,
+                                    },
+                                },
+                            );
+                        }
+                    }
+                },
+            );
             std::thread::spawn(move || {
                 let download = || -> Result<(VoltMetadata, Option<Vec<u8>>)> {
                     let download_volt_result = download_volt(&info);

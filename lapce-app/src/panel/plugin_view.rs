@@ -237,6 +237,7 @@ fn available_view(plugin: PluginData, core_rpc: CoreRpcHandler) -> impl View {
             })
             .disabled(move || installed.get() || installing.get())
             .on_click_stop(move |_| {
+                tracing::info!("Install button clicked for plugin");
                 plugin.install_volt(info.get_untracked());
             })
             .style(move |s| {
@@ -316,6 +317,7 @@ fn available_view(plugin: PluginData, core_rpc: CoreRpcHandler) -> impl View {
             .style(|s| s.flex_col().flex_grow(1.0).flex_basis(0.0).min_width(0.0)),
         ))
         .on_click_stop(move |_| {
+            tracing::info!("Plugin row clicked - opening volt view");
             internal_command.send(InternalCommand::OpenVoltView {
                 volt_id: volt_id.clone(),
             });

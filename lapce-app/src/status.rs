@@ -18,7 +18,7 @@ use lsp_types::{DiagnosticSeverity, ProgressToken};
 
 use crate::{
     app::clickable_icon,
-    bridge::{bridge_status_indicator, BridgeStatus, PluginStatus, UEClient},
+    bridge::bridge_status_indicator,
     command::LapceWorkbenchCommand,
     config::{LapceConfig, color::LapceColor, icon::LapceIcons},
     editor::EditorData,
@@ -234,16 +234,13 @@ pub fn status(
                 let is_ue_project = window_tab_data.is_unreal_project();
                 let bridge_status = window_tab_data.bridge_status;
                 let bridge_clients = window_tab_data.bridge_clients;
-                let plugin_status = window_tab_data.plugin_status;
+                let popover_active = window_tab_data.bridge_popover_data.active;
 
                 bridge_status_indicator(
                     config,
                     bridge_status,
                     bridge_clients,
-                    plugin_status,
-                    move || {
-                        window_tab_data.install_ue_plugin();
-                    },
+                    popover_active,
                 )
                 .style(move |s| {
                     // Only show for Unreal projects
